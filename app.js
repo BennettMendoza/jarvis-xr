@@ -78,6 +78,8 @@ async function transcribe(blob) {
   fd.append("language", "es");
   fd.append("response_format", "json");
   fd.append("temperature", "0");
+  // pista de vocabulario para que Whisper escriba «Jarvis» correctamente
+  fd.append("prompt", "Jarvis.");
   const r = await fetch(API + "/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + cfg.key }, body: fd });
   if (!r.ok) throw new Error(await groqError(r));
   return ((await r.json()).text || "").trim();
@@ -522,7 +524,9 @@ function startRec(mode) {
 }
 function stopRec() { if (recorder && recorder.state !== "inactive") recorder.stop(); }
 
-const WAKE = /\b(j|y|ch|g|h)[aá]r?vi[sz]\b/i;
+// En español «Jarvis» suele transcribirse como Yarbis, Jarbis, Charvis, Harvis…: aceptamos todas.
+const WAKE_SRC = String.raw`\b(?:j|y|ch|g|h|ll|sh|dj|zh)[aáeé]r[vbw][iíe][sz]?\b|\btravis\b`;
+const WAKE = new RegExp(WAKE_SRC, "i");
 const JUNK = /^[¡!¿\s]*(gracias( por ver( el video)?)?|muchas gracias|subt[ií]tulos.*|suscr[ií]bete.*|\.+|)[.!\s]*$/i;
 async function onRecStop() {
   const dur = performance.now() - recStart, mode = recMode;
@@ -547,7 +551,7 @@ async function onRecStop() {
     setState("idle"); return;
   }
   setState("idle");
-  const cmd = text.replace(/^.*?\b(j|y|ch|g|h)[aá]r?vi[sz]\b[\s,.:!¡¿?]*/i, "").trim();
+  const cmd = text.replace(new RegExp(String.raw`^.*?(?:${WAKE_SRC})[\s,.:!¡¿?]*`, "i"), "").trim();
   if (!cmd || cmd.length < 2) { followUntil = Date.now() + 8000; await say("¿Sí?"); followUntil = Date.now() + 8000; return; }
   ask(woke ? cmd : text);
 }
