@@ -156,7 +156,7 @@ setInterval(() => {
 let lastMinute = -1;
 
 // ---------------- Cerebro ----------------
-const ACT = /\[\[\s*(TAREA|HECHA|BORRAR|TIMER|ENCARGO)\s*:\s*([^\]]*)\]\]/gi;
+const ACT = /\[\[\s*(TAREA|HECHA|BORRAR|TIMER|ENCARGO|TEAMS|HACER_TEAMS|CONECTAR_TEAMS)\s*:?\s*([^\]]*)\]\]/gi;
 function rules() {
   const list = tasks.length ? tasks.map((t, i) => `${i + 1}. [${t.done ? "x" : " "}] ${t.text}`).join("\n") : "(ninguno)";
   return `Eres JARVIS, la inteligencia artificial personal de un estudiante, y vives como un orbe holográfico en sus lentes de realidad mixta. Tu estilo: mayordomo digital británico en español. Formal pero cálido, seguro, eficiente, con humor seco y sutil; nunca empalagoso ni exagerado. Frases como «A su servicio», «Enseguida», «Me permito sugerir…» encajan, sin abusar. No asumas el género del usuario.${cfg.name ? ` Dirígete al usuario como «${cfg.name}».` : ""}
@@ -173,7 +173,9 @@ Para ejecutar acciones, escribe al FINAL de tu respuesta estas etiquetas exactas
 [[TAREA: texto]] añade un pendiente · [[HECHA: n]] marca hecho el número n · [[BORRAR: n]] elimina el número n · [[TIMER: minutos]] inicia un temporizador de enfoque.
 ${bridge.ok
     ? `[[ENCARGO: descripción completa]] manda la tarea a Claude en la PC del estudiante, que la hace completa como borrador (ensayo redactado con referencias reales, o ejercicios resueltos con procedimiento) más unas notas con los puntos clave, en la carpeta Tareas. Úsalo cuando el estudiante diga que tiene una tarea o trabajo y quiera que la hagas. Incluye en la descripción materia, tema, qué piden y fecha de entrega si las dijo. Si falta lo esencial (materia o qué piden), pregúntalo antes de encargar. Acompáñalo de [[TAREA: …]] para anotarla en pendientes.
-Encargos recientes en la PC: ${bridge.list.slice(-5).map((e) => `«${e.texto.slice(0, 60)}» (${e.estado})`).join("; ") || "ninguno"}.`
+Encargos recientes en la PC: ${bridge.list.slice(-5).map((e) => `«${e.texto.slice(0, 60)}» (${e.estado})`).join("; ") || "ninguno"}.
+Microsoft Teams (${teamsInfo.estado}): [[TEAMS]] revisa las tareas pendientes de Teams (úsalo cuando pida checar sus tareas o pendientes de Teams) · [[HACER_TEAMS: n]] manda la tarea n de la lista de Teams a Claude para que la haga (una etiqueta por tarea; si dice «hazlas todas», pon una por cada tarea) · [[CONECTAR_TEAMS]] inicia la conexión con Teams si no está conectado.
+Tareas de Teams conocidas: ${teamsInfo.list.length ? teamsInfo.list.map((t, i) => `${i + 1}. ${t.clase ? t.clase + " — " : ""}${t.titulo} (entrega ${t.entrega ? t.entrega.slice(0, 10) : "sin fecha"})`).join("; ") : "aún no revisadas"}.`
     : "La conexión con la PC está apagada: si el estudiante pide mandar una tarea a Claude en su PC, explícale que abra el puente en su PC y lo conecte en la configuración de Jarvis."}`;
 }
 function runActions(text) {
@@ -185,6 +187,9 @@ function runActions(text) {
     if (K === "BORRAR") del.push(parseInt(v, 10) - 1);
     if (K === "TIMER") startTimer(Math.min(180, Math.max(1, parseInt(v, 10) || 25)));
     if (K === "ENCARGO" && v) sendEncargo(v);
+    if (K === "TEAMS") teamsCheck();
+    if (K === "CONECTAR_TEAMS") teamsConnect();
+    if (K === "HACER_TEAMS") teamsDo(parseInt(v, 10));
   }
   done.forEach((i) => { if (tasks[i]) { tasks[i].done = true; changed = true; } });
   del.sort((a, b) => b - a).forEach((i) => { if (tasks[i]) { tasks.splice(i, 1); changed = true; } });
@@ -280,7 +285,8 @@ setInterval(() => pollBridge(), 20000);
 setInterval(() => {
   if (!pendingNews.length || busy || state !== "idle" || recorder) return;
   const e = pendingNews.shift();
-  const tema = e.texto.length > 50 ? e.texto.slice(0, 50) + "…" : e.texto;
+  if (e.estado === "voz") { say(e.texto); return; }
+  const tema =e.texto.length > 50 ? e.texto.slice(0, 50) + "…" : e.texto;
   if (e.estado === "listo") {
     turns.push({ role: "assistant", content: `(Aviso) El material del encargo «${e.texto}» está listo en la carpeta Tareas de la PC. Resumen: ${e.resumen}` });
     addLog("j", `Material listo: ${tema}\n${e.resumen}`);
@@ -291,6 +297,57 @@ setInterval(() => {
   }
 }, 3000);
 if (bridge.url && bridge.code) bridgeConnect(true);
+
+// ---------------- Microsoft Teams (a través del puente) ----------------
+const teamsInfo = { estado: "sin revisar", list: [] };
+const fecha = (iso) => iso ? new Date(iso).toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" }) : "sin fecha";
+async function teamsCheck() {
+  if (!bridge.ok) { say("Para revisar Teams necesito el puente con su PC encendido."); return; }
+  try {
+    const st = await bridgeFetch("/api/teams/estado");
+    teamsInfo.estado = st.estado;
+    if (st.estado !== "conectado") { await teamsConnect(); return; }
+    const { tareas } = await bridgeFetch("/api/teams/tareas");
+    teamsInfo.list = tareas || [];
+    dot("teams", true);
+    const n = teamsInfo.list.length;
+    const lista = teamsInfo.list.map((t, i) => `${i + 1}. ${t.clase ? t.clase + ": " : ""}${t.titulo}, entrega ${fecha(t.entrega)}`);
+    addLog("j", n ? "Tareas pendientes en Teams:\n" + lista.join("\n") : "No hay tareas pendientes en Teams.");
+    turns.push({ role: "assistant", content: n ? "(Revisé Teams) Pendientes:\n" + lista.join("\n") : "(Revisé Teams) No hay pendientes." });
+    pendingNews.push({ estado: "voz", texto: n
+      ? `Tiene ${n} ${n === 1 ? "tarea pendiente" : "tareas pendientes"} en Teams. ${lista.slice(0, 4).join(". ")}. ¿Quiere que empiece con alguna, o con todas?`
+      : "Revisé Teams: no tiene tareas pendientes. Bien hecho." });
+  } catch (e) { addLog("e", "Teams: " + e.message); say("No pude revisar Teams. Le dejé el detalle en la conversación."); }
+}
+async function teamsConnect() {
+  try {
+    const st = await bridgeFetch("/api/teams/login", { method: "POST", body: "{}" });
+    if (st.estado === "error") throw new Error(st.mensaje);
+    teamsInfo.estado = "esperando";
+    lastText = st.mensaje; panelDirty = true;
+    addLog("j", "Conectar Teams: " + st.mensaje);
+    const host = st.url.replace(/^https?:\/\//, "");
+    pendingNews.push({ estado: "voz", texto: `Para conectar Teams, desde su PC o celular entre a ${host} y escriba este código: ${st.codigo}. Inicie sesión con su cuenta de la escuela.` });
+    const t0 = Date.now();
+    const iv = setInterval(async () => {
+      try {
+        const s = await bridgeFetch("/api/teams/estado");
+        if (s.estado === "conectado") { clearInterval(iv); teamsInfo.estado = "conectado"; dot("teams", true); addLog("j", "Teams conectado."); teamsCheck(); }
+        else if (s.estado === "error" || Date.now() - t0 > 15 * 60e3) { clearInterval(iv); dot("teams", false); addLog("e", "Teams: " + (s.mensaje || "no se completó la conexión.")); }
+      } catch { /* reintenta en el siguiente ciclo */ }
+    }, 5000);
+  } catch (e) { dot("teams", false); addLog("e", "Teams: " + e.message); }
+}
+async function teamsDo(n) {
+  const t = teamsInfo.list[n - 1];
+  if (!t) { addLog("e", `No tengo la tarea ${n} de Teams; primero pídame revisar Teams.`); return; }
+  try {
+    await bridgeFetch("/api/teams/encargar", { method: "POST", body: JSON.stringify({ id: t.id }) });
+    addLog("j", `Encargo enviado a Claude: ${t.titulo}`);
+    pollBridge(true);
+  } catch (e) { addLog("e", "No pude mandar la tarea de Teams: " + e.message); }
+}
+$("#teams-connect").addEventListener("click", () => (bridge.ok ? teamsCheck() : addLog("e", "Primero conecte el puente con su PC.")));
 
 // ---------------- Voz de Jarvis (TTS) ----------------
 // Dos motores: la voz del sistema (speechSynthesis) si hay una en español, y si no

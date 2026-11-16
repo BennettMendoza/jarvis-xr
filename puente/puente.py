@@ -34,7 +34,7 @@ TAREAS = BASE / "Tareas"
 CONF = BASE / "puente.json"
 DB = BASE / "encargos.json"
 CERT, KEY = BASE / "cert.pem", BASE / "key.pem"
-PORT = 8443
+PORT = int(os.environ.get("JARVIS_PORT", "8443"))
 ORIGINS = {"https://bennettmendoza.github.io", "http://localhost:8765", "http://127.0.0.1:8765"}
 CLAUDE = shutil.which("claude") or str(HOME / ".local" / "bin" / "claude.exe")
 OPENSSL = shutil.which("openssl") or r"C:\Program Files\Git\usr\bin\openssl.exe"
@@ -177,6 +177,141 @@ def worker():
             actualizar(eid, estado="error", resumen="No encontré Claude Code en la PC.")
 
 
+# ---------------- Microsoft Teams (Graph, tareas de clase) ----------------
+# Inicio de sesión por «código de dispositivo»: entras en microsoft.com/devicelogin con tu cuenta
+# de la escuela. Se usa el cliente público de Microsoft Graph PowerShell (el mismo que usa el
+# módulo oficial). El token se guarda solo en esta PC (Documentos/Jarvis/teams.json).
+import urllib.parse
+import urllib.request
+import urllib.error
+import html as htmlmod
+
+MS_CLIENT = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
+MS_SCOPE = "EduAssignments.ReadBasic User.Read offline_access"
+MS_AUTH = "https://login.microsoftonline.com/organizations/oauth2/v2.0"
+TEAMS_FILE = BASE / "teams.json"
+teams = {"estado": "desconectado", "mensaje": "", "codigo": "", "url": ""}
+teams_tok = load_json(TEAMS_FILE, {}) if TEAMS_FILE.exists() else {}
+if teams_tok.get("refresh_token"):
+    teams["estado"] = "conectado"
+
+
+def http_json(url, data=None, token=None):
+    body = urllib.parse.urlencode(data).encode() if data is not None else None
+    req = urllib.request.Request(url, data=body)
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except Exception:
+            return e.code, {}
+
+
+def explica_error_ms(j):
+    e = j.get("error")
+    d = j.get("error_description") or (e.get("message") if isinstance(e, dict) else "") or str(e or "")
+    if "AADSTS65001" in d or "AADSTS90094" in d or ("admin" in d.lower() and ("consent" in d.lower() or "approv" in d.lower())):
+        return "Tu escuela pide que un administrador apruebe el acceso; con la API no se puede. Hay que usar el método del navegador automático."
+    if "AADSTS53003" in d or "AADSTS50105" in d:
+        return "Tu escuela bloquea este tipo de acceso para tu cuenta."
+    return d[:300] or "Error desconocido de Microsoft."
+
+
+def teams_login_thread(dc):
+    interval = int(dc.get("interval", 5))
+    fin = time.time() + int(dc.get("expires_in", 900))
+    while time.time() < fin:
+        time.sleep(interval)
+        st, j = http_json(MS_AUTH + "/token", {
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "client_id": MS_CLIENT, "device_code": dc["device_code"]})
+        if st == 200 and j.get("access_token"):
+            j["obtenido"] = time.time()
+            teams_tok.clear(); teams_tok.update(j)
+            save_json(TEAMS_FILE, teams_tok)
+            teams.update(estado="conectado", mensaje="Conectado a Teams.", codigo="", url="")
+            log("Teams conectado.")
+            return
+        err = j.get("error")
+        if err == "authorization_pending":
+            continue
+        if err == "slow_down":
+            interval += 5
+            continue
+        teams.update(estado="error", mensaje=explica_error_ms(j), codigo="", url="")
+        log("Teams: " + teams["mensaje"])
+        return
+    teams.update(estado="desconectado", mensaje="El código expiró. Vuelve a pedirlo.", codigo="", url="")
+
+
+def teams_login():
+    st, j = http_json(MS_AUTH + "/devicecode", {"client_id": MS_CLIENT, "scope": MS_SCOPE})
+    if st != 200:
+        teams.update(estado="error", mensaje=explica_error_ms(j))
+        return teams
+    teams.update(estado="esperando", codigo=j["user_code"], url=j["verification_uri"],
+                 mensaje=f"Entra a {j['verification_uri']} y escribe el código {j['user_code']}.")
+    threading.Thread(target=teams_login_thread, args=(j,), daemon=True).start()
+    return teams
+
+
+def teams_token():
+    if teams_tok.get("access_token") and time.time() - teams_tok.get("obtenido", 0) < int(teams_tok.get("expires_in", 3600)) - 120:
+        return teams_tok["access_token"]
+    if not teams_tok.get("refresh_token"):
+        raise RuntimeError("Teams no está conectado.")
+    st, j = http_json(MS_AUTH + "/token", {"grant_type": "refresh_token", "client_id": MS_CLIENT,
+                                           "refresh_token": teams_tok["refresh_token"], "scope": MS_SCOPE})
+    if st != 200:
+        teams.update(estado="desconectado", mensaje="La sesión de Teams expiró. Vuelve a conectar.")
+        raise RuntimeError(teams["mensaje"])
+    j["obtenido"] = time.time()
+    teams_tok.update(j)
+    save_json(TEAMS_FILE, teams_tok)
+    return teams_tok["access_token"]
+
+
+def texto_plano(h):
+    h = re.sub(r"<(br|/p|/div|/li)[^>]*>", "\n", h or "", flags=re.I)
+    return re.sub(r"\n{3,}", "\n\n", htmlmod.unescape(re.sub(r"<[^>]+>", "", h))).strip()
+
+
+teams_cache = {"lista": [], "hora": 0}
+
+
+def teams_tareas():
+    tok = teams_token()
+    G = "https://graph.microsoft.com/v1.0"
+    st, cls = http_json(G + "/education/me/classes?$select=id,displayName", token=tok)
+    clases = {c["id"]: c.get("displayName", "") for c in cls.get("value", [])} if st == 200 else {}
+    st, j = http_json(G + "/education/me/assignments?$expand=submissions&$top=200", token=tok)
+    if st != 200:
+        st, j = http_json(G + "/education/me/assignments?$top=200", token=tok)
+    if st != 200:
+        raise RuntimeError(explica_error_ms(j))
+    ahora = datetime.utcnow().isoformat()
+    out = []
+    for a in j.get("value", []):
+        if a.get("status") not in (None, "assigned"):
+            continue
+        subs = a.get("submissions") or []
+        if any(s.get("status") in ("submitted", "returned") for s in subs):
+            continue
+        due = a.get("dueDateTime") or ""
+        if due and due < ahora[:10]:
+            continue  # ya venció
+        out.append({"id": a["id"], "clase": clases.get(a.get("classId"), ""), "titulo": a.get("displayName", ""),
+                    "entrega": due, "instrucciones": texto_plano((a.get("instructions") or {}).get("content", ""))[:3000],
+                    "url": a.get("webUrl", "")})
+    out.sort(key=lambda x: x["entrega"] or "9999")
+    teams_cache.update(lista=out, hora=time.time())
+    return out
+
+
 # ---------------- Servidor ----------------
 PAGINA = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Puente Jarvis</title><body style="background:#04080c;color:#dcf0f6;font:20px system-ui;padding:40px">
@@ -228,6 +363,17 @@ class Handler(BaseHTTPRequestHandler):
             if self.authed():
                 self.reply(200, {"ok": True, "claude": Path(CLAUDE).exists()})
             return
+        if self.path == "/api/teams/estado":
+            if self.authed():
+                self.reply(200, teams)
+            return
+        if self.path == "/api/teams/tareas":
+            if self.authed():
+                try:
+                    self.reply(200, {"tareas": teams_tareas()})
+                except Exception as ex:
+                    self.reply(502, {"error": str(ex)})
+            return
         if self.path == "/api/encargos":
             if self.authed():
                 with lock:
@@ -237,15 +383,26 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(404, {"error": "No existe."})
 
     def do_POST(self):
-        if self.path != "/api/encargos":
+        if self.path not in ("/api/encargos", "/api/teams/login", "/api/teams/encargar"):
             return self.reply(404, {"error": "No existe."})
         if not self.authed():
             return
         try:
             n = min(int(self.headers.get("Content-Length", 0)), 8000)
-            texto = str(json.loads(self.rfile.read(n) or b"{}").get("texto", "")).strip()[:1500]
+            body = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
-            return self.reply(400, {"error": "Encargo inválido."})
+            return self.reply(400, {"error": "Petición inválida."})
+        if self.path == "/api/teams/login":
+            return self.reply(200, teams_login())
+        if self.path == "/api/teams/encargar":
+            t = next((x for x in teams_cache["lista"] if x["id"] == body.get("id")), None)
+            if not t:
+                return self.reply(404, {"error": "No encontré esa tarea; vuelve a revisar Teams."})
+            texto = (f"Tarea de Teams. Clase: {t['clase']}. Título: {t['titulo']}. "
+                     f"Entrega: {t['entrega'][:10] or 'sin fecha'}. Instrucciones del profesor: {t['instrucciones'] or '(sin instrucciones)'}")
+            e = nuevo_encargo(texto[:4000])
+            return self.reply(200, {"id": e["id"], "estado": e["estado"]})
+        texto = str(body.get("texto", "")).strip()[:1500]
         if not texto:
             return self.reply(400, {"error": "El encargo está vacío."})
         e = nuevo_encargo(texto)
