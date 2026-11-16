@@ -19,7 +19,10 @@ const cfg = {
   model: RETIRED.includes(store.get("model", "")) ? CHAT_PREFS[0] : store.get("model", CHAT_PREFS[0]),
   stt: store.get("stt", "whisper-large-v3-turbo"),
   handsFree: store.get("handsFree", true),
+  name: store.get("name", ""),
 };
+$("#name").value = cfg.name;
+$("#name").addEventListener("change", (e) => { cfg.name = e.target.value.trim().slice(0, 40); store.set("name", cfg.name); });
 $("#key").value = cfg.key;
 $("#model").value = cfg.model;
 $("#stt").value = cfg.stt;
@@ -151,7 +154,7 @@ setInterval(() => {
 const ACT = /\[\[\s*(TAREA|HECHA|BORRAR|TIMER)\s*:\s*([^\]]*)\]\]/gi;
 function rules() {
   const list = tasks.length ? tasks.map((t, i) => `${i + 1}. [${t.done ? "x" : " "}] ${t.text}`).join("\n") : "(ninguno)";
-  return `Eres JARVIS, el asistente personal de estudio de un estudiante, y vives como un orbe holográfico en sus lentes de realidad mixta. Hablas español con un tono cercano, seguro y un toque elegante de mayordomo, sin exagerar. No asumas el género del usuario.
+  return `Eres JARVIS, la inteligencia artificial personal de un estudiante, y vives como un orbe holográfico en sus lentes de realidad mixta. Tu estilo: mayordomo digital británico en español. Formal pero cálido, seguro, eficiente, con humor seco y sutil; nunca empalagoso ni exagerado. Frases como «A su servicio», «Enseguida», «Me permito sugerir…» encajan, sin abusar. No asumas el género del usuario.${cfg.name ? ` Dirígete al usuario como «${cfg.name}».` : ""}
 Reglas:
 - Todo lo que escribes se lee en voz alta: respuestas breves (2 a 5 frases) salvo que pidan detalle. Sin markdown, sin listas largas, sin emojis.
 - Si explicas algo, sé claro y da un ejemplo concreto. En un quiz, haz UNA pregunta a la vez y espera la respuesta.
@@ -206,33 +209,74 @@ async function ask(text) {
 // Dos motores: la voz del sistema (speechSynthesis) si hay una en español, y si no
 // (el navegador del Quest no trae), Piper: una voz neural gratis que corre dentro
 // del navegador. El modelo (~60 MB) se descarga una vez y queda guardado.
-const PIPER_VOICE = "es_MX-ald-medium";
+// Perfiles de voz. «rate» < 1 hace la voz más grave y pausada (estilo mayordomo);
+// «fx» le agrega un filtro con un leve eco metálico, como de asistente holográfico.
+const VOICES = {
+  jarvis: { id: "es_ES-davefx-medium", rate: 0.93, fx: true, label: "Jarvis · formal (España)" },
+  jarvisMx: { id: "es_MX-ald-medium", rate: 0.91, fx: true, label: "Jarvis · latino" },
+  natural: { id: "es_MX-ald-medium", rate: 1, fx: false, label: "Natural (México)" },
+};
+let voiceProfile = VOICES[store.get("voice", "jarvis")] || VOICES.jarvis;
+let PIPER_VOICE = voiceProfile.id;
 let voice = null, engine = null, piper = null, piperLoading = null, currentAudio = null, speakToken = 0;
 const ttsNote = (t) => { $("#tts-note").textContent = t ? " · " + t : ""; };
+
+const voiceSel = $("#voice");
+for (const [k, v] of Object.entries(VOICES)) { const o = document.createElement("option"); o.value = k; o.textContent = v.label; voiceSel.append(o); }
+voiceSel.value = store.get("voice", "jarvis");
+voiceSel.addEventListener("change", async () => {
+  store.set("voice", voiceSel.value);
+  voiceProfile = VOICES[voiceSel.value];
+  if (voiceProfile.id !== PIPER_VOICE) { PIPER_VOICE = voiceProfile.id; piperLoading = null; if (engine === "piper") engine = null; await loadPiper(); }
+  say("Voz actualizada. A su servicio.");
+});
 
 function pickVoice() {
   const vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
   const es = vs.filter((v) => /^es/i.test(v.lang));
   voice = es.find((v) => /mx|419|us/i.test(v.lang)) || es[0] || null;
-  if (voice && engine !== "piper" && new URLSearchParams(location.search).get("voz") !== "neural") { engine = "native"; ok.tts = true; dot("tts", true); ttsNote("voz del sistema"); }
+  // la voz del sistema solo se usa mientras la neural carga, o si no se puede cargar
+  if (voice && !engine) { engine = "native"; ok.tts = true; dot("tts", true); }
 }
 if (window.speechSynthesis) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
-setTimeout(() => { if (engine !== "native") loadPiper(); }, 1500);
+setTimeout(loadPiper, 800);
+
+// Efecto «holográfico»: filtro + eco corto. Usa su propio AudioContext de salida.
+let outAc = null;
+function withFx(audio) {
+  try {
+    outAc = outAc || new (window.AudioContext || window.webkitAudioContext)();
+    if (outAc.state !== "running") outAc.resume().catch(() => {});
+    const src = outAc.createMediaElementSource(audio);
+    const hp = outAc.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 120;
+    const pres = outAc.createBiquadFilter(); pres.type = "peaking"; pres.frequency.value = 2800; pres.gain.value = 4; pres.Q.value = 0.9;
+    const comp = outAc.createDynamicsCompressor();
+    const delay = outAc.createDelay(0.1); delay.delayTime.value = 0.017;
+    const wet = outAc.createGain(); wet.gain.value = 0.22;
+    src.connect(hp).connect(pres);
+    pres.connect(comp);
+    pres.connect(delay).connect(wet).connect(comp);
+    comp.connect(outAc.destination);
+  } catch {}
+}
 
 function loadPiper() {
   if (piperLoading) return piperLoading;
-  ttsNote("cargando voz neural…");
+  ttsNote("cargando voz…");
+  const want = PIPER_VOICE;
   piperLoading = (async () => {
     try {
       const mod = await import("https://cdn.jsdelivr.net/npm/@diffusionstudio/vits-web@1.0.3/+esm");
       const stored = await mod.stored().catch(() => []);
-      if (!stored.includes(PIPER_VOICE)) {
-        await mod.download(PIPER_VOICE, (p) => { if (p.total) ttsNote(`descargando voz ${Math.round((p.loaded * 100) / p.total)}%`); });
+      if (!stored.includes(want)) {
+        await mod.download(want, (p) => { if (p.total) ttsNote(`descargando voz ${Math.round((p.loaded * 100) / p.total)}%`); });
       }
-      piper = mod; engine = "piper"; ok.tts = true; dot("tts", true); ttsNote("voz neural lista");
+      if (want !== PIPER_VOICE) return;
+      piper = mod; engine = "piper"; ok.tts = true; dot("tts", true); ttsNote(voiceProfile.label);
     } catch (e) {
       piperLoading = null;
-      if (engine !== "native") { ok.tts = false; dot("tts", false); ttsNote("no se pudo cargar: " + (e.message || e)); }
+      if (engine === "native") ttsNote("voz del sistema (la neural no cargó)");
+      else { ok.tts = false; dot("tts", false); ttsNote("no se pudo cargar: " + (e.message || e)); }
     }
   })();
   return piperLoading;
@@ -244,10 +288,15 @@ function sentences(text) {
   for (const s of raw) { if (out.length && out[out.length - 1].length < 40) out[out.length - 1] += " " + s; else out.push(s); }
   return out;
 }
-function playBlob(blob) {
+function playBlob(blob, styled = false) {
   return new Promise((res) => {
     const url = URL.createObjectURL(blob);
     const a = new Audio(url); currentAudio = a;
+    if (styled) {
+      a.preservesPitch = false; a.mozPreservesPitch = false; a.webkitPreservesPitch = false;
+      a.playbackRate = voiceProfile.rate;
+      if (voiceProfile.fx) withFx(a);
+    }
     const done = () => { URL.revokeObjectURL(url); if (currentAudio === a) currentAudio = null; res(); };
     a.onended = done; a.onerror = done;
     a.play().catch(done);
@@ -260,7 +309,7 @@ async function sayPiper(text, token) {
     const wav = await next;
     if (token !== speakToken) return;
     if (i + 1 < parts.length) next = piper.predict({ text: parts[i + 1], voiceId: PIPER_VOICE });
-    await playBlob(wav);
+    await playBlob(wav, true);
     if (token !== speakToken) return;
   }
 }
@@ -269,7 +318,7 @@ function sayNative(text) {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = voice?.lang || "es-MX"; if (voice) u.voice = voice;
-    u.rate = 1.05; u.pitch = 0.95;
+    u.rate = voiceProfile.rate; u.pitch = voiceProfile.fx ? 0.8 : 1;
     u.onend = resolve; u.onerror = resolve;
     speechSynthesis.speak(u);
     setTimeout(resolve, 60000);
@@ -292,7 +341,7 @@ function hush() {
 }
 $("#test-voice").addEventListener("click", async () => {
   if (!ok.tts) { await loadPiper(); }
-  say("Hola. Soy Jarvis, tu asistente de estudio. Sistemas en línea.");
+  say(`Buenas. Todos los sistemas en línea${cfg.name ? ", " + cfg.name : ""}. ¿En qué trabajamos hoy?`);
 });
 
 // ---------------- Micrófono, manos libres y push-to-talk ----------------
