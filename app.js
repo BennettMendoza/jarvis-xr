@@ -9,9 +9,14 @@ const store = {
 };
 
 // ---------------- Configuración ----------------
+// Groq retira modelos con frecuencia: estas listas van en orden de preferencia y
+// al guardar la clave se elige el primero que tu cuenta tenga disponible.
+const CHAT_PREFS = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+const STT_PREFS = ["whisper-large-v3-turbo", "whisper-large-v3"];
+const RETIRED = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
 const cfg = {
   key: store.get("key", ""),
-  model: store.get("model", "llama-3.3-70b-versatile"),
+  model: RETIRED.includes(store.get("model", "")) ? CHAT_PREFS[0] : store.get("model", CHAT_PREFS[0]),
   stt: store.get("stt", "whisper-large-v3-turbo"),
   handsFree: store.get("handsFree", true),
 };
@@ -45,13 +50,17 @@ async function groqError(r) {
   try { const j = await r.json(); msg = j.error?.message || ""; } catch {}
   if (r.status === 401) return "La clave de Groq no es válida.";
   if (r.status === 429) return "Llegaste al límite gratis de Groq por ahora. Espera un minuto.";
+  if (r.status === 404 || /does not exist|do not have access|decommissioned/i.test(msg)) return `El modelo «${cfg.model}» ya no está disponible en Groq. Toca «Guardar y probar» para que elija otro automáticamente.`;
   return `Groq respondió ${r.status}. ${msg}`.trim();
 }
 async function chat(messages) {
   const r = await fetch(API + "/chat/completions", {
     method: "POST",
     headers: { Authorization: "Bearer " + cfg.key, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: cfg.model, messages, temperature: 0.6, max_tokens: 500 }),
+    body: JSON.stringify({
+      model: cfg.model, messages, temperature: 0.6, max_completion_tokens: 1500,
+      ...(cfg.model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}),
+    }),
   });
   if (!r.ok) throw new Error(await groqError(r));
   const j = await r.json();
@@ -70,13 +79,29 @@ async function transcribe(blob) {
   return ((await r.json()).text || "").trim();
 }
 
+async function pickModels() {
+  const r = await fetch(API + "/models", { headers: { Authorization: "Bearer " + cfg.key } });
+  if (!r.ok) throw new Error(await groqError(r));
+  const ids = new Set(((await r.json()).data || []).filter((m) => m.active !== false).map((m) => m.id));
+  if (!ids.has(cfg.model)) {
+    const m = CHAT_PREFS.find((id) => ids.has(id)) || [...ids].find((id) => !/whisper|guard|orpheus|tts/i.test(id));
+    if (!m) throw new Error("Tu cuenta de Groq no tiene modelos de chat disponibles.");
+    cfg.model = m;
+  }
+  if (!ids.has(cfg.stt)) cfg.stt = STT_PREFS.find((id) => ids.has(id)) || cfg.stt;
+  $("#model").value = cfg.model; $("#stt").value = cfg.stt;
+  store.set("model", cfg.model); store.set("stt", cfg.stt);
+}
+
 $("#save").addEventListener("click", async () => {
   cfg.key = $("#key").value.trim();
-  cfg.model = $("#model").value.trim() || "llama-3.3-70b-versatile";
-  cfg.stt = $("#stt").value.trim() || "whisper-large-v3-turbo";
-  store.set("key", cfg.key); store.set("model", cfg.model); store.set("stt", cfg.stt);
+  cfg.model = $("#model").value.trim() || CHAT_PREFS[0];
+  cfg.stt = $("#stt").value.trim() || STT_PREFS[0];
+  store.set("key", cfg.key);
   $("#save").disabled = true; $("#save").textContent = "Probando…";
   try {
+    await pickModels();
+    addLog("j", "Modelo elegido: " + cfg.model);
     const t = await chat([{ role: "user", content: "Responde solo: OK" }]);
     ok.key = !!t; dot("key", true);
     addLog("j", "Conexión con el cerebro establecida.");
@@ -516,6 +541,9 @@ renderer.setAnimationLoop(() => {
 
 // ---------------- Inicio ----------------
 renderTasks();
-if (cfg.key) { ok.key = true; dot("key", true); }
+if (cfg.key) {
+  ok.key = true; dot("key", true);
+  pickModels().catch((e) => { ok.key = false; dot("key", false); addLog("e", e.message); refreshEnter(); });
+}
 refreshEnter();
 addLog("j", "Hola. Guarda tu clave de Groq, activa el micrófono y entra a realidad mixta.");
