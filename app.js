@@ -24,6 +24,7 @@ $("#key").value = cfg.key;
 $("#model").value = cfg.model;
 $("#stt").value = cfg.stt;
 $("#handsfree").checked = cfg.handsFree;
+$("#cur-model").textContent = cfg.model + " (sin comprobar)";
 
 let tasks = store.get("tasks", []);
 let turns = [];
@@ -90,6 +91,7 @@ async function pickModels() {
   }
   if (!ids.has(cfg.stt)) cfg.stt = STT_PREFS.find((id) => ids.has(id)) || cfg.stt;
   $("#model").value = cfg.model; $("#stt").value = cfg.stt;
+  $("#cur-model").textContent = cfg.model;
   store.set("model", cfg.model); store.set("stt", cfg.stt);
 }
 
