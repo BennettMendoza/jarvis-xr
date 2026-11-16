@@ -326,7 +326,7 @@ async function teamsConnect() {
     teamsInfo.estado = "esperando";
     lastText = st.mensaje; panelDirty = true;
     addLog("j", "Conectar Teams: " + st.mensaje);
-    pendingNews.push({ estado: "voz", texto: "Para conectar Teams abrí Google Chrome en su PC. Inicie sesión ahí con su cuenta de la escuela, una sola vez. Cuando termine, la ventana se cierra sola y reviso sus tareas." });
+    pendingNews.push({ estado: "voz", texto: "Para conectar Teams abrí Google Chrome en su PC. Inicie sesión con su cuenta de la escuela y, cuando pregunte, elija Sí para mantener la sesión iniciada. Después espere: la ventana se cierra sola." });
     const t0 = Date.now();
     const iv = setInterval(async () => {
       try {

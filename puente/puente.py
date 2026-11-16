@@ -179,21 +179,17 @@ def worker():
 
 # ---------------- Microsoft Teams (navegador automático) ----------------
 # Tu escuela no permite que apps externas usen la API de Microsoft, así que el puente abre
-# Google Chrome con un perfil propio (Documentos/Jarvis/navegador-chrome), donde inicias sesión UNA vez
-# con tu cuenta de la escuela. Después lo abre oculto y lee las tareas que la app de Tareas de
-# Teams descarga para mostrártelas. Tu contraseña nunca pasa por el puente: la escribes tú en Chrome.
+# Google Chrome con un perfil propio (Documentos/Jarvis/navegador-chrome), donde inicias sesión UNA
+# vez con tu cuenta de la escuela (marcando «mantener la sesión iniciada»). Después lo abre oculto
+# y lee las tareas que la app de Tareas de Microsoft descarga. Tu contraseña la escribes tú en Chrome.
 import html as htmlmod
 
 NAV_DIR = BASE / "navegador-chrome"
 NAV_OK = BASE / "navegador-ok.txt"
 DEBUG = BASE / "teams-debug.json"
 nav_lock = threading.Lock()
-ASSIGN_URLS = [
-    "https://assignments.onenote.com/",
-    "https://teams.microsoft.com/l/app/66aeee93-507d-479a-a3ef-8f494af43945",  # app «Tareas» en Teams web
-]
-WEB_BUTTONS = ["Usar la aplicación web", "Use the web app instead", "Continuar en este explorador",
-               "Continue on this browser", "Usar la aplicación web en su lugar"]
+TEAMS_URL = "https://teams.microsoft.com/v2/"
+ASSIGN_URL = "https://assignments.onenote.com/classes/all/list"
 teams = {"estado": "conectado" if NAV_OK.exists() else "desconectado", "mensaje": "", "codigo": "", "url": ""}
 teams_cache = {"lista": [], "hora": 0}
 
@@ -216,11 +212,12 @@ def _recorrer(obj, tareas, nombres):
             _recorrer(v, tareas, nombres)
 
 
-def _capturar(visible, espera_por_url):
-    """Abre Chrome, visita la app de Tareas y junta los JSON de tareas que descarga."""
+def _capturar(visible, espera):
+    """Abre Chrome (visible para iniciar sesión, oculto para leer) y junta las tareas.
+    Devuelve (tareas, nombres, info) donde info dice si vio datos o si pidió iniciar sesión."""
     from playwright.sync_api import sync_playwright
     tareas, nombres, urls = {}, {}, []
-    final = ""
+    info = {"datos": False, "pide_login": False, "final": ""}
     with nav_lock, sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
             str(NAV_DIR), channel="chrome", headless=not visible, viewport={"width": 1280, "height": 900})
@@ -229,50 +226,56 @@ def _capturar(visible, espera_por_url):
             try:
                 if "json" not in (r.headers.get("content-type") or ""):
                     return
-                if not re.search(r"assign|/edu|class", r.url, re.I):
+                if not re.search(r"assign|/edu|class", r.url, re.I) or "telemetry" in r.url:
                     return
-                urls.append(r.url[:200])
-                _recorrer(r.json(), tareas, nombres)
+                urls.append(f"{r.status} {r.url[:180]}")
+                if r.status == 200:
+                    info["datos"] = True
+                    _recorrer(r.json(), tareas, nombres)
             except Exception:
                 pass
 
         ctx.on("response", on_resp)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        for url in ASSIGN_URLS:
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            except Exception:
-                pass
-            fin = time.time() + espera_por_url
-            while time.time() < fin and not tareas:
+        if visible:
+            # 1) inicio de sesión normal en Teams; esperamos a que llegue a Teams (hasta 10 min)
+            page.goto(TEAMS_URL, wait_until="domcontentloaded", timeout=60000)
+            fin = time.time() + 600
+            while time.time() < fin and not page.url.startswith("https://teams.microsoft.com/v2"):
                 page.wait_for_timeout(1000)
-                for txt in WEB_BUTTONS:  # Teams a veces pregunta si abrir la app de escritorio
-                    try:
-                        b = page.get_by_text(txt, exact=False)
-                        if b.count():
-                            b.first.click(timeout=1000)
-                    except Exception:
-                        pass
-                if not visible and "login.microsoftonline.com" in page.url:
+            page.wait_for_timeout(8000)
+        # 2) la app de Tareas: aquí se descargan las tareas de todas tus clases
+        try:
+            page.goto(ASSIGN_URL, wait_until="domcontentloaded", timeout=60000)
+        except Exception:
+            pass
+        fin = time.time() + espera
+        while time.time() < fin and not tareas:
+            page.wait_for_timeout(1000)
+            if any(("login_required" in f.url or "interaction_required" in f.url) for f in page.frames):
+                info["pide_login"] = True
+                if not visible:
                     break
-            if tareas:
-                page.wait_for_timeout(4000)  # que termine de cargar el resto
-                break
-        final = page.url
+            if info["datos"] and time.time() > fin - espera + 15:
+                break  # ya respondió la lista (aunque venga vacía)
+        if tareas:
+            page.wait_for_timeout(4000)
+        info["final"] = page.url[:200]
         ctx.close()
-    save_json(DEBUG, {"urls": urls[-60:], "final": final[:200], "tareas": len(tareas)})
-    return tareas, nombres, final
+    save_json(DEBUG, {"urls": urls[-60:], "info": info, "tareas": len(tareas)})
+    return tareas, nombres, info
 
 
 def _login_thread():
     try:
-        tareas, _, final = _capturar(visible=True, espera_por_url=300)
-        if tareas or ("login.microsoftonline.com" not in final and "teams.microsoft.com" in final):
+        tareas, _, info = _capturar(visible=True, espera=180)
+        if info["datos"]:
             NAV_OK.write_text(datetime.now().isoformat(), encoding="utf-8")
             teams.update(estado="conectado", mensaje="Teams conectado.")
-            log("Teams conectado (navegador).")
+            log("Teams conectado (Chrome).")
         else:
-            teams.update(estado="desconectado", mensaje="No se completó el inicio de sesión en Chrome. Vuelve a intentarlo.")
+            teams.update(estado="desconectado",
+                         mensaje="No alcancé a ver tus tareas. Vuelve a intentarlo: inicia sesión, marca «Sí» en mantener la sesión iniciada y espera a que cargue.")
     except Exception as ex:
         teams.update(estado="error", mensaje=f"No pude abrir Chrome: {ex}"[:300])
         log("Teams: " + teams["mensaje"])
@@ -282,7 +285,7 @@ def teams_login():
     if teams["estado"] == "esperando":
         return teams
     teams.update(estado="esperando", codigo="", url="",
-                 mensaje="Se abrió Google Chrome en su PC: inicie sesión ahí con su cuenta de la escuela y abra Tareas. Cuando cargue, se cierra solo.")
+                 mensaje="Se abrió Google Chrome en su PC. Inicie sesión con su cuenta de la escuela y, cuando pregunte, elija «Sí» para mantener la sesión iniciada. Luego espere: la ventana se cierra sola.")
     threading.Thread(target=_login_thread, daemon=True).start()
     return teams
 
@@ -290,13 +293,13 @@ def teams_login():
 def teams_tareas():
     if not NAV_OK.exists():
         raise RuntimeError("Teams no está conectado.")
-    tareas, nombres, final = _capturar(visible=False, espera_por_url=45)
-    if not tareas:
-        if "login.microsoftonline.com" in final:
+    tareas, nombres, info = _capturar(visible=False, espera=45)
+    if not info["datos"]:
+        if info["pide_login"]:
             NAV_OK.unlink(missing_ok=True)
-            teams.update(estado="desconectado", mensaje="La sesión de Teams expiró. Vuelve a conectar.")
+            teams.update(estado="desconectado", mensaje="La sesión de Teams se cerró. Vuelve a conectar y elige «Sí» en mantener la sesión iniciada.")
             raise RuntimeError(teams["mensaje"])
-        raise RuntimeError("Abrí Teams pero no encontré la lista de tareas. Avísale a quien te armó Jarvis (teams-debug.json).")
+        raise RuntimeError("Abrí Teams pero no encontré la lista de tareas (detalle en teams-debug.json).")
     hoy = datetime.utcnow().isoformat()[:10]
     out = []
     for a in tareas.values():
