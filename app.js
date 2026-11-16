@@ -151,7 +151,7 @@ setInterval(() => {
 }, 1000);
 
 // ---------------- Cerebro ----------------
-const ACT = /\[\[\s*(TAREA|HECHA|BORRAR|TIMER)\s*:\s*([^\]]*)\]\]/gi;
+const ACT = /\[\[\s*(TAREA|HECHA|BORRAR|TIMER|ENCARGO)\s*:\s*([^\]]*)\]\]/gi;
 function rules() {
   const list = tasks.length ? tasks.map((t, i) => `${i + 1}. [${t.done ? "x" : " "}] ${t.text}`).join("\n") : "(ninguno)";
   return `Eres JARVIS, la inteligencia artificial personal de un estudiante, y vives como un orbe holográfico en sus lentes de realidad mixta. Tu estilo: mayordomo digital británico en español. Formal pero cálido, seguro, eficiente, con humor seco y sutil; nunca empalagoso ni exagerado. Frases como «A su servicio», «Enseguida», «Me permito sugerir…» encajan, sin abusar. No asumas el género del usuario.${cfg.name ? ` Dirígete al usuario como «${cfg.name}».` : ""}
@@ -165,7 +165,11 @@ Temporizador: ${timer.end ? "quedan " + mmss(timerLeft()) : "apagado"}.
 Pendientes:
 ${list}
 Para ejecutar acciones, escribe al FINAL de tu respuesta estas etiquetas exactas, cada una en su línea, solo cuando el estudiante lo pida:
-[[TAREA: texto]] añade un pendiente · [[HECHA: n]] marca hecho el número n · [[BORRAR: n]] elimina el número n · [[TIMER: minutos]] inicia un temporizador de enfoque.`;
+[[TAREA: texto]] añade un pendiente · [[HECHA: n]] marca hecho el número n · [[BORRAR: n]] elimina el número n · [[TIMER: minutos]] inicia un temporizador de enfoque.
+${bridge.ok
+    ? `[[ENCARGO: descripción completa]] manda la tarea a Claude en la PC del estudiante, que prepara en una carpeta una guía del tema, ejercicios parecidos resueltos, un plan y fuentes, para que el estudiante haga la tarea entendiéndola. Úsalo cuando el estudiante diga que tiene una tarea o trabajo y quiera ayuda o que la prepares. Incluye en la descripción materia, tema, qué piden y fecha de entrega si las dijo. Si falta lo esencial (materia o qué piden), pregúntalo antes de encargar. Acompáñalo de [[TAREA: …]] para anotarla en pendientes.
+Encargos recientes en la PC: ${bridge.list.slice(-5).map((e) => `«${e.texto.slice(0, 60)}» (${e.estado})`).join("; ") || "ninguno"}.`
+    : "La conexión con la PC está apagada: si el estudiante pide mandar una tarea a Claude en su PC, explícale que abra el puente en su PC y lo conecte en la configuración de Jarvis."}`;
 }
 function runActions(text) {
   let changed = false; const done = [], del = [];
@@ -175,6 +179,7 @@ function runActions(text) {
     if (K === "HECHA") done.push(parseInt(v, 10) - 1);
     if (K === "BORRAR") del.push(parseInt(v, 10) - 1);
     if (K === "TIMER") startTimer(Math.min(180, Math.max(1, parseInt(v, 10) || 25)));
+    if (K === "ENCARGO" && v) sendEncargo(v);
   }
   done.forEach((i) => { if (tasks[i]) { tasks[i].done = true; changed = true; } });
   del.sort((a, b) => b - a).forEach((i) => { if (tasks[i]) { tasks.splice(i, 1); changed = true; } });
@@ -204,6 +209,83 @@ async function ask(text) {
   }
   busy = false;
 }
+
+// ---------------- Puente con la PC (Claude Code) ----------------
+const bridge = { url: store.get("bridgeUrl", ""), code: store.get("bridgeCode", ""), ok: false, list: [], announced: new Set(store.get("announced", [])) };
+$("#bridge-url").value = bridge.url;
+$("#bridge-code").value = bridge.code;
+function bridgeLink() { const u = $("#bridge-url").value.trim().replace(/\/+$/, ""); $("#bridge-open").href = u || "#"; return u; }
+bridgeLink();
+$("#bridge-url").addEventListener("input", bridgeLink);
+
+async function bridgeFetch(path, opts = {}) {
+  const r = await fetch(bridge.url + path, {
+    ...opts,
+    headers: { "X-Jarvis-Code": bridge.code, ...(opts.body ? { "Content-Type": "application/json" } : {}) },
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || "El puente respondió " + r.status);
+  return j;
+}
+async function bridgeConnect(quiet = false) {
+  bridge.url = bridgeLink(); bridge.code = $("#bridge-code").value.trim();
+  store.set("bridgeUrl", bridge.url); store.set("bridgeCode", bridge.code);
+  if (!bridge.url || !bridge.code) { bridge.ok = false; dot("pc", null); return; }
+  try {
+    const j = await bridgeFetch("/api/ping");
+    bridge.ok = true; dot("pc", true);
+    if (!quiet) addLog("j", j.claude ? "Conectado con su PC. Ya puedo mandarle tareas a Claude." : "Conectado con su PC, pero no encuentro Claude Code instalado allá.");
+    pollBridge(true);
+  } catch (e) {
+    bridge.ok = false; dot("pc", false);
+    if (!quiet) addLog("e", e.message === "Failed to fetch" || e.name === "TypeError"
+      ? "No llego a su PC. Revise que el puente esté abierto, que estén en el mismo Wi-Fi y toque «Abrir puente» para aceptar el aviso de seguridad."
+      : e.message);
+  }
+}
+$("#bridge-connect").addEventListener("click", () => bridgeConnect(false));
+
+async function sendEncargo(texto) {
+  if (!bridge.ok) { addLog("e", "No puedo mandar el encargo: el puente con su PC no está conectado."); return; }
+  try {
+    await bridgeFetch("/api/encargos", { method: "POST", body: JSON.stringify({ texto }) });
+    addLog("j", "Encargo enviado a Claude en su PC: " + texto);
+    pollBridge(true);
+  } catch (e) { addLog("e", "No pude mandar el encargo: " + e.message); }
+}
+
+const pendingNews = [];
+async function pollBridge(silentFirst = false) {
+  if (!bridge.ok) return;
+  try {
+    const { encargos } = await bridgeFetch("/api/encargos");
+    bridge.list = encargos || [];
+    for (const e of bridge.list) {
+      if ((e.estado === "listo" || e.estado === "error") && !bridge.announced.has(e.id)) {
+        bridge.announced.add(e.id);
+        if (!silentFirst || Date.now() - new Date(e.creado).getTime() < 3 * 3600e3) pendingNews.push(e);
+      }
+    }
+    store.set("announced", [...bridge.announced].slice(-100));
+    dot("pc", true);
+  } catch { dot("pc", false); }
+}
+setInterval(() => pollBridge(), 20000);
+// Avisa cuando Jarvis está libre, sin interrumpir lo que está diciendo.
+setInterval(() => {
+  if (!pendingNews.length || busy || state !== "idle" || recorder) return;
+  const e = pendingNews.shift();
+  const tema = e.texto.length > 50 ? e.texto.slice(0, 50) + "…" : e.texto;
+  if (e.estado === "listo") {
+    turns.push({ role: "assistant", content: `(Aviso) El material del encargo «${e.texto}» está listo en la carpeta Tareas de la PC. Resumen: ${e.resumen}` });
+    addLog("j", `Material listo: ${tema}\n${e.resumen}`);
+    say(`Su material está listo: ${tema}. ${e.resumen}`);
+  } else {
+    addLog("e", `El encargo «${tema}» falló: ${e.resumen}`);
+    say("Hubo un problema con un encargo en su PC. Le dejé el detalle en la conversación.");
+  }
+}, 3000);
+if (bridge.url && bridge.code) bridgeConnect(true);
 
 // ---------------- Voz de Jarvis (TTS) ----------------
 // Dos motores: la voz del sistema (speechSynthesis) si hay una en español, y si no

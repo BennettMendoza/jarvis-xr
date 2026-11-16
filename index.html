@@ -76,7 +76,7 @@
 <div class="ui">
   <section class="card" id="setup">
     <h1>JARVIS</h1>
-    <p class="dim">Asistente de estudio en realidad mixta · cerebro: Groq (gratis) · <span id="ver">versión 8</span></p>
+    <p class="dim">Asistente de estudio en realidad mixta · cerebro: Groq (gratis) · <span id="ver">versión 9</span></p>
     <p class="dim">Modelo actual: <b id="cur-model">—</b></p>
 
     <h2>1 · Clave de Groq</h2>
@@ -107,12 +107,24 @@
     <p class="dim" id="mic-diag">Micrófono sin activar.</p>
     <div class="row"><button class="btn" id="mic-test">Grabar prueba (3 s)</button></div>
 
+    <h2>4 · Puente con tu PC (Claude)</h2>
+    <p class="dim">En tu PC abre <b>iniciar-puente</b>. Te mostrará una dirección y un código.</p>
+    <label for="bridge-url">Dirección del puente</label>
+    <input type="text" id="bridge-url" placeholder="https://192.168.1.37:8443" autocomplete="off" inputmode="url">
+    <label for="bridge-code">Código</label>
+    <input type="text" id="bridge-code" placeholder="6 dígitos" autocomplete="off" inputmode="numeric">
+    <div class="row">
+      <a class="btn" id="bridge-open" href="#" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;text-decoration:none">1 · Abrir puente</a>
+      <button class="btn" id="bridge-connect">2 · Conectar</button>
+    </div>
+
     <h2>Estado</h2>
     <ul class="steps">
       <li><span class="dot" id="d-key"></span>Cerebro (Groq)</li>
       <li><span class="dot" id="d-mic"></span>Micrófono</li>
       <li><span class="dot" id="d-tts"></span>Voz de Jarvis<span class="dim" id="tts-note"></span></li>
       <li><span class="dot" id="d-xr"></span>Realidad mixta</li>
+      <li><span class="dot" id="d-pc"></span>Puente con tu PC</li>
     </ul>
 
     <label class="toggle"><input type="checkbox" id="handsfree"> Manos libres: escucha siempre y responde cuando dices «Jarvis»</label>
@@ -143,6 +155,6 @@
   </section>
 </div>
 
-<script type="module" src="./app.js?v=8"></script>
+<script type="module" src="./app.js?v=9"></script>
 </body>
 </html>
