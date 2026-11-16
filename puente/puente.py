@@ -179,12 +179,12 @@ def worker():
 
 # ---------------- Microsoft Teams (navegador automático) ----------------
 # Tu escuela no permite que apps externas usen la API de Microsoft, así que el puente abre
-# Microsoft Edge con un perfil propio (Documentos/Jarvis/navegador), donde inicias sesión UNA vez
+# Google Chrome con un perfil propio (Documentos/Jarvis/navegador-chrome), donde inicias sesión UNA vez
 # con tu cuenta de la escuela. Después lo abre oculto y lee las tareas que la app de Tareas de
-# Teams descarga para mostrártelas. Tu contraseña nunca pasa por el puente: la escribes tú en Edge.
+# Teams descarga para mostrártelas. Tu contraseña nunca pasa por el puente: la escribes tú en Chrome.
 import html as htmlmod
 
-NAV_DIR = BASE / "navegador"
+NAV_DIR = BASE / "navegador-chrome"
 NAV_OK = BASE / "navegador-ok.txt"
 DEBUG = BASE / "teams-debug.json"
 nav_lock = threading.Lock()
@@ -217,13 +217,13 @@ def _recorrer(obj, tareas, nombres):
 
 
 def _capturar(visible, espera_por_url):
-    """Abre Edge, visita la app de Tareas y junta los JSON de tareas que descarga."""
+    """Abre Chrome, visita la app de Tareas y junta los JSON de tareas que descarga."""
     from playwright.sync_api import sync_playwright
     tareas, nombres, urls = {}, {}, []
     final = ""
     with nav_lock, sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
-            str(NAV_DIR), channel="msedge", headless=not visible, viewport={"width": 1280, "height": 900})
+            str(NAV_DIR), channel="chrome", headless=not visible, viewport={"width": 1280, "height": 900})
 
         def on_resp(r):
             try:
@@ -272,9 +272,9 @@ def _login_thread():
             teams.update(estado="conectado", mensaje="Teams conectado.")
             log("Teams conectado (navegador).")
         else:
-            teams.update(estado="desconectado", mensaje="No se completó el inicio de sesión en Edge. Vuelve a intentarlo.")
+            teams.update(estado="desconectado", mensaje="No se completó el inicio de sesión en Chrome. Vuelve a intentarlo.")
     except Exception as ex:
-        teams.update(estado="error", mensaje=f"No pude abrir Edge: {ex}"[:300])
+        teams.update(estado="error", mensaje=f"No pude abrir Chrome: {ex}"[:300])
         log("Teams: " + teams["mensaje"])
 
 
@@ -282,7 +282,7 @@ def teams_login():
     if teams["estado"] == "esperando":
         return teams
     teams.update(estado="esperando", codigo="", url="",
-                 mensaje="Se abrió Microsoft Edge en su PC: inicie sesión ahí con su cuenta de la escuela y abra Tareas. Cuando cargue, se cierra solo.")
+                 mensaje="Se abrió Google Chrome en su PC: inicie sesión ahí con su cuenta de la escuela y abra Tareas. Cuando cargue, se cierra solo.")
     threading.Thread(target=_login_thread, daemon=True).start()
     return teams
 
