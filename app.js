@@ -308,6 +308,11 @@ $("#mic-on").addEventListener("click", async () => {
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     ac = new (window.AudioContext || window.webkitAudioContext)();
+    await ac.resume().catch(() => {});
+    const track = stream.getAudioTracks()[0];
+    if (track) { track.onmute = micDiag; track.onunmute = micDiag; track.onended = micDiag; }
+    ac.onstatechange = micDiag;
+    setTimeout(micDiag, 300);
     const src = ac.createMediaStreamSource(stream);
     analyser = ac.createAnalyser(); analyser.fftSize = 1024; src.connect(analyser);
     ok.mic = true; dot("mic", true);
@@ -320,6 +325,42 @@ $("#mic-on").addEventListener("click", async () => {
     addLog("e", "No pude usar el micrófono. Revisa el permiso del navegador para este sitio.");
   }
   refreshEnter();
+});
+
+// Diagnóstico: dice en palabras si el sistema bloquea el micrófono o si el audio está pausado.
+function micDiag() {
+  const el = $("#mic-diag"); if (!el) return;
+  const tr = stream?.getAudioTracks()[0];
+  if (!tr) { el.textContent = "Micrófono sin activar."; return; }
+  const parts = [];
+  if (tr.readyState === "ended") parts.push("El micrófono se desconectó: vuelve a tocar «Activar micrófono».");
+  else if (tr.muted) parts.push("El sistema del Quest está silenciando el micrófono: revisa Configuración → Privacidad y seguridad → Micrófono y permite el navegador.");
+  if (ac && ac.state !== "running") parts.push("Audio en pausa: toca cualquier botón de la página.");
+  el.textContent = parts.join(" ") || `Micrófono conectado (${tr.label || "predeterminado"}).`;
+}
+setInterval(micDiag, 2000);
+
+$("#mic-test").addEventListener("click", async () => {
+  const btn = $("#mic-test");
+  if (!stream) { addLog("e", "Primero toca «Activar micrófono»."); return; }
+  wakeAudio();
+  const m = mime();
+  const rec = new MediaRecorder(stream, m ? { mimeType: m } : undefined);
+  const parts = [];
+  rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
+  rec.onstop = async () => {
+    const blob = new Blob(parts, { type: rec.mimeType || "audio/webm" });
+    btn.disabled = false; btn.textContent = "Grabar prueba (3 s)";
+    addLog("j", `Grabé ${(blob.size / 1024).toFixed(1)} KB. Te lo reproduzco…`);
+    await playBlob(blob);
+    if (ok.key) {
+      try { const t = await transcribe(blob); addLog("j", t ? `Entendí: «${t}»` : "No entendí palabras en la grabación."); }
+      catch (e) { addLog("e", "No pude transcribir: " + e.message); }
+    }
+  };
+  btn.disabled = true; btn.textContent = "Grabando… habla";
+  rec.start();
+  setTimeout(() => rec.stop(), 3000);
 });
 
 const buf = new Float32Array(1024);
