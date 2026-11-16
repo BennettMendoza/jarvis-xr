@@ -156,8 +156,14 @@ def worker():
                 pass
             if r.returncode != 0 or data.get("is_error"):
                 msg = (data.get("result") or r.stderr or r.stdout or "error desconocido").strip()[:400]
-                if "login" in msg.lower() or "auth" in msg.lower():
+                low = msg.lower()
+                if "login" in low or "auth" in low:
                     msg = "Claude Code no tiene sesión iniciada en la PC. Abre una terminal, escribe claude y entra con tu cuenta."
+                elif "limit" in low:
+                    hora = re.search(r"resets\s+([0-9:apm]+)", msg)
+                    msg = ("Llegaste al límite de uso de tu plan de Claude"
+                           + (f"; se libera a las {hora.group(1)}" if hora else "")
+                           + ". Vuelve a pedírmelo después.")
                 actualizar(eid, estado="error", resumen=msg)
                 log(f"Error en {eid}: {msg}")
             else:
