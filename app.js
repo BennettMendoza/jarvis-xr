@@ -149,8 +149,11 @@ setInterval(() => {
     const msg = timer.label === "Descanso" ? "Terminó el descanso. De vuelta al trabajo cuando estés listo." : `Bloque de ${Math.round(timer.total / 60)} minutos completado. Buen trabajo. Tómate cinco minutos.`;
     say(msg);
   }
-  panelDirty = true;
+  // solo redibuja si corre el temporizador o cambió el minuto del reloj
+  const minute = new Date().getMinutes();
+  if (timer.end || minute !== lastMinute) { lastMinute = minute; panelDirty = true; }
 }, 1000);
+let lastMinute = -1;
 
 // ---------------- Cerebro ----------------
 const ACT = /\[\[\s*(TAREA|HECHA|BORRAR|TIMER|ENCARGO)\s*:\s*([^\]]*)\]\]/gi;
@@ -344,19 +347,67 @@ function withFx(audio) {
   } catch {}
 }
 
+// La voz neural se genera en un Web Worker (hilo aparte): así el orbe y la realidad
+// mixta no se congelan mientras Jarvis prepara lo que va a decir.
+const PIPER_URL = "https://cdn.jsdelivr.net/npm/@diffusionstudio/vits-web@1.0.3/+esm";
+const WORKER_SRC = `
+import * as tts from "${PIPER_URL}";
+self.onmessage = async (e) => {
+  const { id, type, voiceId, text } = e.data;
+  try {
+    if (type === "load") {
+      const stored = await tts.stored().catch(() => []);
+      if (!stored.includes(voiceId)) await tts.download(voiceId, (p) => self.postMessage({ id, progress: p.total ? p.loaded / p.total : 0 }));
+      self.postMessage({ id, done: true });
+    } else {
+      const wav = await tts.predict({ text, voiceId });
+      self.postMessage({ id, done: true, wav });
+    }
+  } catch (err) { self.postMessage({ id, error: String((err && err.message) || err) }); }
+};`;
+let ttsWorker = null, ttsMode = "";
+function workerCall(msg, onProgress) {
+  return new Promise((resolve, reject) => {
+    const id = Math.random().toString(36).slice(2);
+    const onMsg = (e) => {
+      if (e.data.id !== id) return;
+      if (e.data.progress !== undefined) { onProgress?.(e.data.progress); return; }
+      ttsWorker.removeEventListener("message", onMsg);
+      e.data.error ? reject(new Error(e.data.error)) : resolve(e.data.wav);
+    };
+    ttsWorker.addEventListener("message", onMsg);
+    ttsWorker.postMessage({ id, ...msg });
+  });
+}
+async function makePiperBackend(voiceId, onProgress) {
+  try {
+    if (!ttsWorker) {
+      ttsWorker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: "text/javascript" })), { type: "module" });
+      ttsWorker.addEventListener("error", () => {}); // los errores llegan por la promesa
+    }
+    await workerCall({ type: "load", voiceId }, onProgress);
+    ttsMode = "hilo aparte";
+    return { predict: ({ text, voiceId: v }) => workerCall({ type: "predict", text, voiceId: v }) };
+  } catch (e) {
+    // Si el navegador no deja usar el worker, se usa el hilo principal (funciona, pero puede trabarse).
+    ttsWorker?.terminate(); ttsWorker = null;
+    const mod = await import(PIPER_URL);
+    const stored = await mod.stored().catch(() => []);
+    if (!stored.includes(voiceId)) await mod.download(voiceId, (p) => p.total && onProgress?.(p.loaded / p.total));
+    ttsMode = "hilo principal";
+    return mod;
+  }
+}
+
 function loadPiper() {
   if (piperLoading) return piperLoading;
   ttsNote("cargando voz…");
   const want = PIPER_VOICE;
   piperLoading = (async () => {
     try {
-      const mod = await import("https://cdn.jsdelivr.net/npm/@diffusionstudio/vits-web@1.0.3/+esm");
-      const stored = await mod.stored().catch(() => []);
-      if (!stored.includes(want)) {
-        await mod.download(want, (p) => { if (p.total) ttsNote(`descargando voz ${Math.round((p.loaded * 100) / p.total)}%`); });
-      }
+      const backend = await makePiperBackend(want, (f) => ttsNote(`descargando voz ${Math.round(f * 100)}%`));
       if (want !== PIPER_VOICE) return;
-      piper = mod; engine = "piper"; ok.tts = true; dot("tts", true); ttsNote(voiceProfile.label);
+      piper = backend; engine = "piper"; ok.tts = true; dot("tts", true); ttsNote(`${voiceProfile.label} (${ttsMode})`);
     } catch (e) {
       piperLoading = null;
       if (engine === "native") ttsNote("voz del sistema (la neural no cargó)");
@@ -748,6 +799,7 @@ $("#enter").addEventListener("click", async () => {
     wakeAudio();
     const session = await navigator.xr.requestSession(xrMode, { requiredFeatures: ["local-floor"], optionalFeatures: ["hand-tracking"] });
     session.addEventListener("selectstart", wakeAudio);
+    renderer.xr.setFoveation(1); // menos detalle en la orilla de la vista = más fluidez
     await renderer.xr.setSession(session);
     session.addEventListener("end", () => { setState("idle"); });
     const h = new Date().getHours();
@@ -805,8 +857,9 @@ renderer.setAnimationLoop(() => {
   panel.lookAt(camPos.x, panel.position.y, camPos.z);
   orb.lookAt(camPos.x, orb.position.y, camPos.z);
 
-  if (panelDirty && t - lastDraw > 0.1) { drawPanel(); panelDirty = false; lastDraw = t; }
-  if (Math.floor(t * 4) % 2 === 0) panelDirty = panelDirty || state !== "idle";
+  // El panel es una textura grande: redibujarlo seguido traba el Quest. Máximo 4 veces por segundo
+  // y solo cuando cambió algo (estado, texto, reloj o temporizador).
+  if (panelDirty && t - lastDraw > 0.25) { drawPanel(); panelDirty = false; lastDraw = t; }
 
   renderer.render(scene, camera);
 });
