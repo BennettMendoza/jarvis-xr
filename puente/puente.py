@@ -177,102 +177,25 @@ def worker():
             actualizar(eid, estado="error", resumen="No encontré Claude Code en la PC.")
 
 
-# ---------------- Microsoft Teams (Graph, tareas de clase) ----------------
-# Inicio de sesión por «código de dispositivo»: entras en microsoft.com/devicelogin con tu cuenta
-# de la escuela. Se usa el cliente público de Microsoft Graph PowerShell (el mismo que usa el
-# módulo oficial). El token se guarda solo en esta PC (Documentos/Jarvis/teams.json).
-import urllib.parse
-import urllib.request
-import urllib.error
+# ---------------- Microsoft Teams (navegador automático) ----------------
+# Tu escuela no permite que apps externas usen la API de Microsoft, así que el puente abre
+# Microsoft Edge con un perfil propio (Documentos/Jarvis/navegador), donde inicias sesión UNA vez
+# con tu cuenta de la escuela. Después lo abre oculto y lee las tareas que la app de Tareas de
+# Teams descarga para mostrártelas. Tu contraseña nunca pasa por el puente: la escribes tú en Edge.
 import html as htmlmod
 
-MS_CLIENT = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
-MS_SCOPE = "EduAssignments.ReadBasic User.Read offline_access"
-MS_AUTH = "https://login.microsoftonline.com/organizations/oauth2/v2.0"
-TEAMS_FILE = BASE / "teams.json"
-teams = {"estado": "desconectado", "mensaje": "", "codigo": "", "url": ""}
-teams_tok = load_json(TEAMS_FILE, {}) if TEAMS_FILE.exists() else {}
-if teams_tok.get("refresh_token"):
-    teams["estado"] = "conectado"
-
-
-def http_json(url, data=None, token=None):
-    body = urllib.parse.urlencode(data).encode() if data is not None else None
-    req = urllib.request.Request(url, data=body)
-    if token:
-        req.add_header("Authorization", "Bearer " + token)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return r.status, json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:
-        try:
-            return e.code, json.loads(e.read() or b"{}")
-        except Exception:
-            return e.code, {}
-
-
-def explica_error_ms(j):
-    e = j.get("error")
-    d = j.get("error_description") or (e.get("message") if isinstance(e, dict) else "") or str(e or "")
-    if "AADSTS65001" in d or "AADSTS90094" in d or ("admin" in d.lower() and ("consent" in d.lower() or "approv" in d.lower())):
-        return "Tu escuela pide que un administrador apruebe el acceso; con la API no se puede. Hay que usar el método del navegador automático."
-    if "AADSTS53003" in d or "AADSTS50105" in d:
-        return "Tu escuela bloquea este tipo de acceso para tu cuenta."
-    return d[:300] or "Error desconocido de Microsoft."
-
-
-def teams_login_thread(dc):
-    interval = int(dc.get("interval", 5))
-    fin = time.time() + int(dc.get("expires_in", 900))
-    while time.time() < fin:
-        time.sleep(interval)
-        st, j = http_json(MS_AUTH + "/token", {
-            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            "client_id": MS_CLIENT, "device_code": dc["device_code"]})
-        if st == 200 and j.get("access_token"):
-            j["obtenido"] = time.time()
-            teams_tok.clear(); teams_tok.update(j)
-            save_json(TEAMS_FILE, teams_tok)
-            teams.update(estado="conectado", mensaje="Conectado a Teams.", codigo="", url="")
-            log("Teams conectado.")
-            return
-        err = j.get("error")
-        if err == "authorization_pending":
-            continue
-        if err == "slow_down":
-            interval += 5
-            continue
-        teams.update(estado="error", mensaje=explica_error_ms(j), codigo="", url="")
-        log("Teams: " + teams["mensaje"])
-        return
-    teams.update(estado="desconectado", mensaje="El código expiró. Vuelve a pedirlo.", codigo="", url="")
-
-
-def teams_login():
-    st, j = http_json(MS_AUTH + "/devicecode", {"client_id": MS_CLIENT, "scope": MS_SCOPE})
-    if st != 200:
-        teams.update(estado="error", mensaje=explica_error_ms(j))
-        return teams
-    teams.update(estado="esperando", codigo=j["user_code"], url=j["verification_uri"],
-                 mensaje=f"Entra a {j['verification_uri']} y escribe el código {j['user_code']}.")
-    threading.Thread(target=teams_login_thread, args=(j,), daemon=True).start()
-    return teams
-
-
-def teams_token():
-    if teams_tok.get("access_token") and time.time() - teams_tok.get("obtenido", 0) < int(teams_tok.get("expires_in", 3600)) - 120:
-        return teams_tok["access_token"]
-    if not teams_tok.get("refresh_token"):
-        raise RuntimeError("Teams no está conectado.")
-    st, j = http_json(MS_AUTH + "/token", {"grant_type": "refresh_token", "client_id": MS_CLIENT,
-                                           "refresh_token": teams_tok["refresh_token"], "scope": MS_SCOPE})
-    if st != 200:
-        teams.update(estado="desconectado", mensaje="La sesión de Teams expiró. Vuelve a conectar.")
-        raise RuntimeError(teams["mensaje"])
-    j["obtenido"] = time.time()
-    teams_tok.update(j)
-    save_json(TEAMS_FILE, teams_tok)
-    return teams_tok["access_token"]
+NAV_DIR = BASE / "navegador"
+NAV_OK = BASE / "navegador-ok.txt"
+DEBUG = BASE / "teams-debug.json"
+nav_lock = threading.Lock()
+ASSIGN_URLS = [
+    "https://assignments.onenote.com/",
+    "https://teams.microsoft.com/l/app/66aeee93-507d-479a-a3ef-8f494af43945",  # app «Tareas» en Teams web
+]
+WEB_BUTTONS = ["Usar la aplicación web", "Use the web app instead", "Continuar en este explorador",
+               "Continue on this browser", "Usar la aplicación web en su lugar"]
+teams = {"estado": "conectado" if NAV_OK.exists() else "desconectado", "mensaje": "", "codigo": "", "url": ""}
+teams_cache = {"lista": [], "hora": 0}
 
 
 def texto_plano(h):
@@ -280,33 +203,115 @@ def texto_plano(h):
     return re.sub(r"\n{3,}", "\n\n", htmlmod.unescape(re.sub(r"<[^>]+>", "", h))).strip()
 
 
-teams_cache = {"lista": [], "hora": 0}
+def _recorrer(obj, tareas, nombres):
+    if isinstance(obj, dict):
+        if obj.get("id") and obj.get("displayName"):
+            nombres[obj["id"]] = obj["displayName"]
+            if "dueDateTime" in obj or "instructions" in obj or "assignTo" in obj:
+                tareas[obj["id"]] = obj
+        for v in obj.values():
+            _recorrer(v, tareas, nombres)
+    elif isinstance(obj, list):
+        for v in obj:
+            _recorrer(v, tareas, nombres)
+
+
+def _capturar(visible, espera_por_url):
+    """Abre Edge, visita la app de Tareas y junta los JSON de tareas que descarga."""
+    from playwright.sync_api import sync_playwright
+    tareas, nombres, urls = {}, {}, []
+    final = ""
+    with nav_lock, sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            str(NAV_DIR), channel="msedge", headless=not visible, viewport={"width": 1280, "height": 900})
+
+        def on_resp(r):
+            try:
+                if "json" not in (r.headers.get("content-type") or ""):
+                    return
+                if not re.search(r"assign|/edu|class", r.url, re.I):
+                    return
+                urls.append(r.url[:200])
+                _recorrer(r.json(), tareas, nombres)
+            except Exception:
+                pass
+
+        ctx.on("response", on_resp)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        for url in ASSIGN_URLS:
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except Exception:
+                pass
+            fin = time.time() + espera_por_url
+            while time.time() < fin and not tareas:
+                page.wait_for_timeout(1000)
+                for txt in WEB_BUTTONS:  # Teams a veces pregunta si abrir la app de escritorio
+                    try:
+                        b = page.get_by_text(txt, exact=False)
+                        if b.count():
+                            b.first.click(timeout=1000)
+                    except Exception:
+                        pass
+                if not visible and "login.microsoftonline.com" in page.url:
+                    break
+            if tareas:
+                page.wait_for_timeout(4000)  # que termine de cargar el resto
+                break
+        final = page.url
+        ctx.close()
+    save_json(DEBUG, {"urls": urls[-60:], "final": final[:200], "tareas": len(tareas)})
+    return tareas, nombres, final
+
+
+def _login_thread():
+    try:
+        tareas, _, final = _capturar(visible=True, espera_por_url=300)
+        if tareas or ("login.microsoftonline.com" not in final and "teams.microsoft.com" in final):
+            NAV_OK.write_text(datetime.now().isoformat(), encoding="utf-8")
+            teams.update(estado="conectado", mensaje="Teams conectado.")
+            log("Teams conectado (navegador).")
+        else:
+            teams.update(estado="desconectado", mensaje="No se completó el inicio de sesión en Edge. Vuelve a intentarlo.")
+    except Exception as ex:
+        teams.update(estado="error", mensaje=f"No pude abrir Edge: {ex}"[:300])
+        log("Teams: " + teams["mensaje"])
+
+
+def teams_login():
+    if teams["estado"] == "esperando":
+        return teams
+    teams.update(estado="esperando", codigo="", url="",
+                 mensaje="Se abrió Microsoft Edge en su PC: inicie sesión ahí con su cuenta de la escuela y abra Tareas. Cuando cargue, se cierra solo.")
+    threading.Thread(target=_login_thread, daemon=True).start()
+    return teams
 
 
 def teams_tareas():
-    tok = teams_token()
-    G = "https://graph.microsoft.com/v1.0"
-    st, cls = http_json(G + "/education/me/classes?$select=id,displayName", token=tok)
-    clases = {c["id"]: c.get("displayName", "") for c in cls.get("value", [])} if st == 200 else {}
-    st, j = http_json(G + "/education/me/assignments?$expand=submissions&$top=200", token=tok)
-    if st != 200:
-        st, j = http_json(G + "/education/me/assignments?$top=200", token=tok)
-    if st != 200:
-        raise RuntimeError(explica_error_ms(j))
-    ahora = datetime.utcnow().isoformat()
+    if not NAV_OK.exists():
+        raise RuntimeError("Teams no está conectado.")
+    tareas, nombres, final = _capturar(visible=False, espera_por_url=45)
+    if not tareas:
+        if "login.microsoftonline.com" in final:
+            NAV_OK.unlink(missing_ok=True)
+            teams.update(estado="desconectado", mensaje="La sesión de Teams expiró. Vuelve a conectar.")
+            raise RuntimeError(teams["mensaje"])
+        raise RuntimeError("Abrí Teams pero no encontré la lista de tareas. Avísale a quien te armó Jarvis (teams-debug.json).")
+    hoy = datetime.utcnow().isoformat()[:10]
     out = []
-    for a in j.get("value", []):
+    for a in tareas.values():
         if a.get("status") not in (None, "assigned"):
             continue
         subs = a.get("submissions") or []
-        if any(s.get("status") in ("submitted", "returned") for s in subs):
+        if any(isinstance(s, dict) and s.get("status") in ("submitted", "returned") for s in subs):
             continue
         due = a.get("dueDateTime") or ""
-        if due and due < ahora[:10]:
-            continue  # ya venció
-        out.append({"id": a["id"], "clase": clases.get(a.get("classId"), ""), "titulo": a.get("displayName", ""),
-                    "entrega": due, "instrucciones": texto_plano((a.get("instructions") or {}).get("content", ""))[:3000],
-                    "url": a.get("webUrl", "")})
+        if due and due[:10] < hoy:
+            continue
+        ins = a.get("instructions")
+        ins = ins.get("content", "") if isinstance(ins, dict) else str(ins or "")
+        out.append({"id": a["id"], "clase": nombres.get(a.get("classId"), ""), "titulo": a.get("displayName", ""),
+                    "entrega": due, "instrucciones": texto_plano(ins)[:3000], "url": a.get("webUrl", "")})
     out.sort(key=lambda x: x["entrega"] or "9999")
     teams_cache.update(lista=out, hora=time.time())
     return out

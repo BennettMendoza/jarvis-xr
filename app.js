@@ -326,8 +326,7 @@ async function teamsConnect() {
     teamsInfo.estado = "esperando";
     lastText = st.mensaje; panelDirty = true;
     addLog("j", "Conectar Teams: " + st.mensaje);
-    const host = st.url.replace(/^https?:\/\//, "");
-    pendingNews.push({ estado: "voz", texto: `Para conectar Teams, desde su PC o celular entre a ${host} y escriba este código: ${st.codigo}. Inicie sesión con su cuenta de la escuela.` });
+    pendingNews.push({ estado: "voz", texto: "Para conectar Teams abrí Microsoft Edge en su PC. Inicie sesión ahí con su cuenta de la escuela, una sola vez. Cuando termine, la ventana se cierra sola y reviso sus tareas." });
     const t0 = Date.now();
     const iv = setInterval(async () => {
       try {
