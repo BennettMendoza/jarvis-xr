@@ -203,32 +203,97 @@ async function ask(text) {
 }
 
 // ---------------- Voz de Jarvis (TTS) ----------------
-let voice = null;
+// Dos motores: la voz del sistema (speechSynthesis) si hay una en español, y si no
+// (el navegador del Quest no trae), Piper: una voz neural gratis que corre dentro
+// del navegador. El modelo (~60 MB) se descarga una vez y queda guardado.
+const PIPER_VOICE = "es_MX-ald-medium";
+let voice = null, engine = null, piper = null, piperLoading = null, currentAudio = null, speakToken = 0;
+const ttsNote = (t) => { $("#tts-note").textContent = t ? " · " + t : ""; };
+
 function pickVoice() {
   const vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
   const es = vs.filter((v) => /^es/i.test(v.lang));
   voice = es.find((v) => /mx|419|us/i.test(v.lang)) || es[0] || null;
-  ok.tts = !!window.speechSynthesis && vs.length > 0;
-  dot("tts", ok.tts ? true : vs.length === 0 && window.speechSynthesis ? null : false);
+  if (voice && engine !== "piper" && new URLSearchParams(location.search).get("voz") !== "neural") { engine = "native"; ok.tts = true; dot("tts", true); ttsNote("voz del sistema"); }
 }
-if (window.speechSynthesis) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; } else dot("tts", false);
+if (window.speechSynthesis) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+setTimeout(() => { if (engine !== "native") loadPiper(); }, 1500);
 
-function say(text) {
-  lastText = text; panelDirty = true;
+function loadPiper() {
+  if (piperLoading) return piperLoading;
+  ttsNote("cargando voz neural…");
+  piperLoading = (async () => {
+    try {
+      const mod = await import("https://cdn.jsdelivr.net/npm/@diffusionstudio/vits-web@1.0.3/+esm");
+      const stored = await mod.stored().catch(() => []);
+      if (!stored.includes(PIPER_VOICE)) {
+        await mod.download(PIPER_VOICE, (p) => { if (p.total) ttsNote(`descargando voz ${Math.round((p.loaded * 100) / p.total)}%`); });
+      }
+      piper = mod; engine = "piper"; ok.tts = true; dot("tts", true); ttsNote("voz neural lista");
+    } catch (e) {
+      piperLoading = null;
+      if (engine !== "native") { ok.tts = false; dot("tts", false); ttsNote("no se pudo cargar: " + (e.message || e)); }
+    }
+  })();
+  return piperLoading;
+}
+
+function sentences(text) {
+  const raw = text.match(/[^.!?…]+[.!?…]*/g)?.map((s) => s.trim()).filter(Boolean) || [text];
+  const out = [];
+  for (const s of raw) { if (out.length && out[out.length - 1].length < 40) out[out.length - 1] += " " + s; else out.push(s); }
+  return out;
+}
+function playBlob(blob) {
+  return new Promise((res) => {
+    const url = URL.createObjectURL(blob);
+    const a = new Audio(url); currentAudio = a;
+    const done = () => { URL.revokeObjectURL(url); if (currentAudio === a) currentAudio = null; res(); };
+    a.onended = done; a.onerror = done;
+    a.play().catch(done);
+  });
+}
+async function sayPiper(text, token) {
+  const parts = sentences(text);
+  let next = piper.predict({ text: parts[0], voiceId: PIPER_VOICE });
+  for (let i = 0; i < parts.length; i++) {
+    const wav = await next;
+    if (token !== speakToken) return;
+    if (i + 1 < parts.length) next = piper.predict({ text: parts[i + 1], voiceId: PIPER_VOICE });
+    await playBlob(wav);
+    if (token !== speakToken) return;
+  }
+}
+function sayNative(text) {
   return new Promise((resolve) => {
-    if (!window.speechSynthesis || !ok.tts) { setState("idle"); resolve(); return; }
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = voice?.lang || "es-MX"; if (voice) u.voice = voice;
     u.rate = 1.05; u.pitch = 0.95;
-    const end = () => { if (state === "speaking") setState("idle"); resolve(); };
-    u.onend = end; u.onerror = end;
-    setState("speaking");
+    u.onend = resolve; u.onerror = resolve;
     speechSynthesis.speak(u);
-    setTimeout(end, 60000);
+    setTimeout(resolve, 60000);
   });
 }
-function hush() { if (window.speechSynthesis) speechSynthesis.cancel(); }
+async function say(text) {
+  lastText = text; panelDirty = true;
+  const token = ++speakToken;
+  if (!ok.tts || !engine) { setState("idle"); return; }
+  setState("speaking");
+  try { engine === "piper" ? await sayPiper(text, token) : await sayNative(text); }
+  catch (e) { addLog("e", "La voz falló: " + (e.message || e)); }
+  if (token === speakToken && state === "speaking") setState("idle");
+}
+function hush() {
+  speakToken++;
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  if (state === "speaking") setState("idle");
+}
+$("#test-voice").addEventListener("click", async () => {
+  if (!ok.tts) { await loadPiper(); }
+  say("Hola. Soy Jarvis, tu asistente de estudio. Sistemas en línea.");
+});
 
 // ---------------- Micrófono, manos libres y push-to-talk ----------------
 let stream = null, analyser = null, level = 0, recorder = null, chunks = [], recStart = 0, recMode = null;

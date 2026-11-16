@@ -73,7 +73,7 @@
 <div class="ui">
   <section class="card" id="setup">
     <h1>JARVIS</h1>
-    <p class="dim">Asistente de estudio en realidad mixta · cerebro: Groq (gratis) · <span id="ver">versión 3</span></p>
+    <p class="dim">Asistente de estudio en realidad mixta · cerebro: Groq (gratis) · <span id="ver">versión 4</span></p>
     <p class="dim">Modelo actual: <b id="cur-model">—</b></p>
 
     <h2>1 · Clave de Groq</h2>
@@ -92,13 +92,13 @@
     </div>
 
     <h2>2 · Micrófono</h2>
-    <div class="row"><button class="btn" id="mic-on">Activar micrófono</button></div>
+    <div class="row"><button class="btn" id="mic-on">Activar micrófono</button><button class="btn" id="test-voice">Probar voz</button></div>
 
     <h2>Estado</h2>
     <ul class="steps">
       <li><span class="dot" id="d-key"></span>Cerebro (Groq)</li>
       <li><span class="dot" id="d-mic"></span>Micrófono</li>
-      <li><span class="dot" id="d-tts"></span>Voz de Jarvis</li>
+      <li><span class="dot" id="d-tts"></span>Voz de Jarvis<span class="dim" id="tts-note"></span></li>
       <li><span class="dot" id="d-xr"></span>Realidad mixta</li>
     </ul>
 
@@ -130,6 +130,6 @@
   </section>
 </div>
 
-<script type="module" src="./app.js?v=3"></script>
+<script type="module" src="./app.js?v=4"></script>
 </body>
 </html>
