@@ -187,6 +187,7 @@ import html as htmlmod
 NAV_DIR = BASE / "navegador-chrome"
 NAV_OK = BASE / "navegador-ok.txt"
 DEBUG = BASE / "teams-debug.json"
+SESION = BASE / "teams-sesion.json"  # cookies de sesión de Microsoft; quédatela solo en tu PC
 nav_lock = threading.Lock()
 TEAMS_URL = "https://teams.microsoft.com/v2/"
 ASSIGN_URL = "https://assignments.onenote.com/classes/all/list"
@@ -220,7 +221,16 @@ def _capturar(visible, espera):
     info = {"datos": False, "pide_login": False, "final": ""}
     with nav_lock, sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
-            str(NAV_DIR), channel="chrome", headless=not visible, viewport={"width": 1280, "height": 900})
+            str(NAV_DIR), channel="chrome", headless=not visible, viewport={"width": 1280, "height": 900},
+            # la app de Tareas inicia sesión dentro de un iframe: necesita cookies de terceros
+            args=["--disable-features=ThirdPartyStoragePartitioning,TrackingProtection3pcd"])
+        # Tu escuela no deja que la sesión sobreviva al cerrar Chrome: la guardamos nosotros
+        # (solo en esta PC) y la restauramos al abrir.
+        if SESION.exists():
+            try:
+                ctx.add_cookies(load_json(SESION, {}).get("cookies", []))
+            except Exception:
+                pass
 
         def on_resp(r):
             try:
@@ -240,27 +250,53 @@ def _capturar(visible, espera):
         if visible:
             # 1) inicio de sesión normal en Teams; esperamos a que llegue a Teams (hasta 10 min)
             page.goto(TEAMS_URL, wait_until="domcontentloaded", timeout=60000)
-            fin = time.time() + 600
-            while time.time() < fin and not page.url.startswith("https://teams.microsoft.com/v2"):
+            page.wait_for_timeout(6000)  # deja que Teams redirija al inicio de sesión
+            fin, seguidos = time.time() + 600, 0
+            while time.time() < fin and seguidos < 8:  # 8 s seguidos dentro de Teams = ya entró
                 page.wait_for_timeout(1000)
-            page.wait_for_timeout(8000)
+                seguidos = seguidos + 1 if page.url.startswith("https://teams.microsoft.com/v2") else 0
         # 2) la app de Tareas: aquí se descargan las tareas de todas tus clases
         try:
             page.goto(ASSIGN_URL, wait_until="domcontentloaded", timeout=60000)
         except Exception:
             pass
         fin = time.time() + espera
+        reintento = False
         while time.time() < fin and not tareas:
             page.wait_for_timeout(1000)
             if any(("login_required" in f.url or "interaction_required" in f.url) for f in page.frames):
                 info["pide_login"] = True
-                if not visible:
+                if visible:
+                    continue
+                if reintento:
+                    break
+                # Plan B: entrar «de frente» a Teams y elegir la cuenta guardada, luego volver a Tareas
+                reintento = True
+                try:
+                    page.goto(TEAMS_URL, wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(6000)
+                    if "login.microsoftonline.com" in page.url:
+                        tile = page.locator("text=/@/")
+                        if tile.count():
+                            tile.first.click(timeout=5000)
+                            page.wait_for_timeout(8000)
+                    if "login.microsoftonline.com" in page.url:
+                        break  # pide contraseña: hay que volver a conectar
+                    page.goto(ASSIGN_URL, wait_until="domcontentloaded", timeout=60000)
+                    info["pide_login"] = False
+                    fin = time.time() + espera
+                except Exception:
                     break
             if info["datos"] and time.time() > fin - espera + 15:
                 break  # ya respondió la lista (aunque venga vacía)
         if tareas:
             page.wait_for_timeout(4000)
         info["final"] = page.url[:200]
+        if info["datos"]:
+            try:
+                save_json(SESION, {"cookies": ctx.storage_state()["cookies"]})
+            except Exception:
+                pass
         ctx.close()
     save_json(DEBUG, {"urls": urls[-60:], "info": info, "tareas": len(tareas)})
     return tareas, nombres, info
