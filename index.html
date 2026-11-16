@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jarvis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #04080c; --panel: rgba(10, 19, 26, 0.86); --panel-2: #0e1b24; --line: #1b3341;
+    --fg: #dcf0f6; --dim: #86a3ae; --core: #62d6ff; --warm: #ffb547; --ok: #67e3a6; --bad: #ff7a6b;
+    --f-display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+    --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 17px/1.5 var(--f-body); }
+  button, input, select { font: inherit; color: inherit; }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .ui {
+    position: relative; z-index: 1; min-height: 100%;
+    display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr) minmax(0, 420px); gap: 20px;
+    padding: 20px max(16px, env(safe-area-inset-right)) 20px max(16px, env(safe-area-inset-left));
+    pointer-events: none;
+  }
+  .ui > * { pointer-events: auto; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; backdrop-filter: blur(8px); min-width: 0; }
+  h1 { margin: 0 0 4px; font: 700 30px var(--f-display); letter-spacing: 0.3em; color: var(--core); }
+  h2 { margin: 18px 0 8px; font: 600 13px var(--f-display); letter-spacing: 0.18em; text-transform: uppercase; color: var(--dim); }
+  p { margin: 6px 0; }
+  .dim { color: var(--dim); font-size: 15px; }
+  label { display: block; font-size: 14px; color: var(--dim); margin: 10px 0 4px; }
+  input[type=password], input[type=text] { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-height: 48px; }
+  input:focus { outline: none; border-color: var(--core); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .btn { border: 1px solid var(--line); background: var(--panel-2); border-radius: 10px; min-height: 52px; padding: 0 18px; cursor: pointer; }
+  .btn.primary { background: var(--core); color: var(--bg); border-color: var(--core); font-weight: 600; }
+  .btn.big { width: 100%; min-height: 64px; font: 700 20px var(--f-display); letter-spacing: 0.12em; }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .btn.live { background: var(--bad); border-color: var(--bad); color: var(--bg); }
+  .steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+  .steps li { display: flex; gap: 10px; align-items: center; font-size: 15px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .log { max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+  .msg { padding: 10px 12px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15px; }
+  .msg.u { background: rgba(98, 214, 255, 0.12); align-self: flex-end; }
+  .msg.j { background: var(--panel-2); border: 1px solid var(--line); }
+  .msg.e { color: var(--bad); border: 1px solid rgba(255, 122, 107, 0.4); }
+  .state { font: 600 20px var(--f-display); letter-spacing: 0.14em; text-transform: uppercase; text-align: center; margin-top: 8px; }
+  .center { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; pointer-events: none; }
+  .center > * { pointer-events: auto; }
+  .toggle { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 15px; }
+  .toggle input { width: 24px; height: 24px; accent-color: var(--core); }
+  ul.tasks { margin: 0; padding-left: 20px; font-size: 15px; }
+  ul.tasks li.done { color: var(--dim); text-decoration: line-through; }
+  code { font-family: var(--f-mono); font-size: 14px; color: var(--core); }
+  a { color: var(--core); }
+  @media (max-width: 1000px) {
+    .ui { grid-template-columns: minmax(0, 1fr); }
+    .center { min-height: 280px; order: -1; }
+  }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div class="ui">
+  <section class="card" id="setup">
+    <h1>JARVIS</h1>
+    <p class="dim">Asistente de estudio en realidad mixta · cerebro: Groq (gratis)</p>
+
+    <h2>1 · Clave de Groq</h2>
+    <p class="dim">Crea una clave gratis en <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a> y pégala aquí. Se guarda solo en este visor.</p>
+    <label for="key">API key</label>
+    <input type="password" id="key" placeholder="gsk_…" autocomplete="off">
+    <details>
+      <summary class="dim" style="cursor:pointer;margin-top:10px">Opciones avanzadas</summary>
+      <label for="model">Modelo de chat</label>
+      <input type="text" id="model">
+      <label for="stt">Modelo de voz a texto</label>
+      <input type="text" id="stt">
+    </details>
+    <div class="row">
+      <button class="btn" id="save">Guardar y probar</button>
+    </div>
+
+    <h2>2 · Micrófono</h2>
+    <div class="row"><button class="btn" id="mic-on">Activar micrófono</button></div>
+
+    <h2>Estado</h2>
+    <ul class="steps">
+      <li><span class="dot" id="d-key"></span>Cerebro (Groq)</li>
+      <li><span class="dot" id="d-mic"></span>Micrófono</li>
+      <li><span class="dot" id="d-tts"></span>Voz de Jarvis</li>
+      <li><span class="dot" id="d-xr"></span>Realidad mixta</li>
+    </ul>
+
+    <label class="toggle"><input type="checkbox" id="handsfree"> Manos libres: escucha siempre y responde cuando dices «Jarvis»</label>
+
+    <div class="row" style="margin-top:18px">
+      <button class="btn primary big" id="enter" disabled>ENTRAR A REALIDAD MIXTA</button>
+    </div>
+    <p class="dim" id="enter-hint">Primero guarda tu clave y activa el micrófono.</p>
+  </section>
+
+  <div class="center">
+    <div class="state" id="state">En línea</div>
+    <div class="row">
+      <button class="btn primary" id="ptt" disabled>Mantén para hablar</button>
+    </div>
+  </div>
+
+  <section class="card">
+    <h2 style="margin-top:0">Cómo se usa dentro de los lentes</h2>
+    <p class="dim">• <b>Hablar:</b> mantén el gatillo (o junta índice y pulgar) mientras hablas; suelta para enviar.<br>
+    • <b>Manos libres:</b> di «Jarvis, …» y tu pregunta.<br>
+    • <b>Mover el orbe:</b> pellizca o aprieta el gatillo <i>tocando el orbe</i> y arrástralo a donde quieras. Se recuerda su lugar.<br>
+    • <b>Pídele:</b> «añade estudiar física», «marca la 1 como hecha», «enfócame 25 minutos», «hazme un quiz de historia».</p>
+    <h2>Conversación</h2>
+    <div class="log" id="log"></div>
+    <h2>Pendientes</h2>
+    <ul class="tasks" id="tasks"></ul>
+  </section>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
