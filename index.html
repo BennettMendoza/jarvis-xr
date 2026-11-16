@@ -54,6 +54,8 @@
   .center > * { pointer-events: auto; }
   .toggle { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 15px; }
   .toggle input { width: 24px; height: 24px; accent-color: var(--core); }
+  .meter { height: 10px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--ok); transition: width 0.08s linear; }
   ul.tasks { margin: 0; padding-left: 20px; font-size: 15px; }
   ul.tasks li.done { color: var(--dim); text-decoration: line-through; }
   code { font-family: var(--f-mono); font-size: 14px; color: var(--core); }
@@ -73,7 +75,7 @@
 <div class="ui">
   <section class="card" id="setup">
     <h1>JARVIS</h1>
-    <p class="dim">Asistente de estudio en realidad mixta · cerebro: Groq (gratis) · <span id="ver">versión 4</span></p>
+    <p class="dim">Asistente de estudio en realidad mixta · cerebro: Groq (gratis) · <span id="ver">versión 5</span></p>
     <p class="dim">Modelo actual: <b id="cur-model">—</b></p>
 
     <h2>1 · Clave de Groq</h2>
@@ -93,6 +95,8 @@
 
     <h2>2 · Micrófono</h2>
     <div class="row"><button class="btn" id="mic-on">Activar micrófono</button><button class="btn" id="test-voice">Probar voz</button></div>
+    <label for="mic-meter">Nivel del micrófono (habla y debe moverse)</label>
+    <div class="meter" id="mic-meter"><i id="mic-level"></i></div>
 
     <h2>Estado</h2>
     <ul class="steps">
@@ -130,6 +134,6 @@
   </section>
 </div>
 
-<script type="module" src="./app.js?v=4"></script>
+<script type="module" src="./app.js?v=5"></script>
 </body>
 </html>

@@ -296,14 +296,18 @@ $("#test-voice").addEventListener("click", async () => {
 });
 
 // ---------------- Micrófono, manos libres y push-to-talk ----------------
-let stream = null, analyser = null, level = 0, recorder = null, chunks = [], recStart = 0, recMode = null;
-let voiceSince = 0, silenceSince = 0;
-const VAD_ON = 0.045, VAD_OFF = 0.025;
+let stream = null, analyser = null, ac = null, level = 0, recorder = null, chunks = [], recStart = 0, recMode = null;
+let voiceSince = 0, silenceSince = 0, noise = 0.01, peak = 0;
+// Umbrales que se adaptan al ruido de fondo: el micrófono del Quest es más bajo que el de una PC.
+const vadOn = () => Math.max(0.012, noise * 3.5);
+const vadOff = () => Math.max(0.008, noise * 2);
+const wakeAudio = () => { if (ac && ac.state !== "running") ac.resume().catch(() => {}); };
+addEventListener("pointerdown", wakeAudio);
 
 $("#mic-on").addEventListener("click", async () => {
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    ac = new (window.AudioContext || window.webkitAudioContext)();
     const src = ac.createMediaStreamSource(stream);
     analyser = ac.createAnalyser(); analyser.fftSize = 1024; src.connect(analyser);
     ok.mic = true; dot("mic", true);
@@ -337,48 +341,65 @@ function startRec(mode) {
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.onstop = onRecStop;
   recorder.start();
-  if (mode === "ptt") setState("listening");
+  setState("listening");
 }
 function stopRec() { if (recorder && recorder.state !== "inactive") recorder.stop(); }
 
-const WAKE = /\b(j|y|ch|g)[aá]r?vi[sz]\b/i;
+const WAKE = /\b(j|y|ch|g|h)[aá]r?vi[sz]\b/i;
 const JUNK = /^(gracias( por ver)?[.!]*|subt[ií]tulos.*|¡?suscr[ií]bete.*|\.+|)$/i;
 async function onRecStop() {
   const dur = performance.now() - recStart, mode = recMode;
   const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
   recorder = null; recMode = null;
-  if (dur < 450) { if (state === "listening") setState("idle"); return; }
-  if (mode === "ptt") setState("thinking");
+  if (dur < 450) { if (state === "listening") setState("idle"); if (mode === "ptt") { lastText = "Mantén el gatillo mientras hablas y suéltalo al terminar."; panelDirty = true; } return; }
+  setState("thinking");
   let text = "";
   try { text = await transcribe(blob); }
-  catch (e) { addLog("e", e.message); lastText = e.message; setState("idle"); return; }
+  catch (e) { addLog("e", "No pude entender el audio: " + e.message); lastText = e.message; setState("idle"); return; }
   text = text.trim();
-  if (JUNK.test(text)) { if (state !== "speaking") setState("idle"); return; }
-  if (mode === "ptt") { ask(text); return; }
+  if (JUNK.test(text)) {
+    if (mode === "ptt") { lastText = "No escuché nada claro. Acércate o habla un poco más fuerte."; addLog("e", lastText); }
+    setState("idle"); return;
+  }
+  if (mode === "ptt") { setState("idle"); ask(text); return; }
   // manos libres: hace falta «Jarvis», salvo justo después de que respondió
   const woke = WAKE.test(text);
-  if (!woke && Date.now() > followUntil) { if (state === "listening") setState("idle"); return; }
-  const cmd = text.replace(/^.*?\b(j|y|ch|g)[aá]r?vi[sz]\b[\s,.:!¡¿?]*/i, "").trim();
+  if (!woke && Date.now() > followUntil) {
+    lastHeard = text; lastText = "Te escuché, pero no dijiste «Jarvis». Empieza tu frase con «Jarvis, …».";
+    addLog("u", "(ignorado) " + text);
+    setState("idle"); return;
+  }
+  setState("idle");
+  const cmd = text.replace(/^.*?\b(j|y|ch|g|h)[aá]r?vi[sz]\b[\s,.:!¡¿?]*/i, "").trim();
   if (!cmd || cmd.length < 2) { followUntil = Date.now() + 8000; await say("¿Sí?"); followUntil = Date.now() + 8000; return; }
   ask(woke ? cmd : text);
 }
 
 function vadTick() {
   level = readLevel();
-  if (!cfg.handsFree || !inputReady() || busy || state === "speaking" || recMode === "ptt") { voiceSince = 0; return; }
+  peak = Math.max(level, peak * 0.97);
+  const meter = $("#mic-level");
+  if (meter) meter.style.width = Math.min(100, (peak / 0.08) * 100) + "%";
+  if (!recorder && state !== "speaking") noise = noise * 0.995 + Math.min(level, 0.05) * 0.005;
+  if (!cfg.handsFree || !inputReady() || busy || state === "speaking" || state === "thinking" || recMode === "ptt") { voiceSince = 0; return; }
   const now = performance.now();
   if (!recorder) {
-    if (level > VAD_ON) { if (!voiceSince) voiceSince = now; if (now - voiceSince > 120) { startRec("vad"); silenceSince = 0; } }
+    if (level > vadOn()) { if (!voiceSince) voiceSince = now; if (now - voiceSince > 120) { startRec("vad"); silenceSince = 0; } }
     else voiceSince = 0;
   } else {
-    if (level < VAD_OFF) { if (!silenceSince) silenceSince = now; if (now - silenceSince > 900) stopRec(); }
+    if (level < vadOff()) { if (!silenceSince) silenceSince = now; if (now - silenceSince > 1000) stopRec(); }
     else silenceSince = 0;
     if (now - recStart > 15000) stopRec();
   }
 }
 const inputReady = () => ok.key && ok.mic;
 
-function pttStart() { if (!inputReady() || busy) return; hush(); if (recorder) { recorder.onstop = null; recorder.stop(); recorder = null; } startRec("ptt"); }
+function pttStart() {
+  wakeAudio();
+  if (!ok.mic) { lastText = "El micrófono no está activo. Sal del modo inmersivo y toca «Activar micrófono»."; panelDirty = true; return; }
+  if (!ok.key) { lastText = "Falta la clave de Groq. Sal y toca «Guardar y probar»."; panelDirty = true; return; }
+  if (busy) return;
+  hush(); if (recorder) { recorder.onstop = null; recorder.stop(); recorder = null; } startRec("ptt"); }
 function pttEnd() { if (recMode === "ptt") stopRec(); }
 
 const pttBtn = $("#ptt");
@@ -543,7 +564,9 @@ let xrMode = "immersive-ar";
 $("#enter").addEventListener("click", async () => {
   if (!ok.xr) { addLog("e", "Este navegador no soporta realidad mixta. Abre esta página en el navegador del Quest 3."); return; }
   try {
+    wakeAudio();
     const session = await navigator.xr.requestSession(xrMode, { requiredFeatures: ["local-floor"], optionalFeatures: ["hand-tracking"] });
+    session.addEventListener("selectstart", wakeAudio);
     await renderer.xr.setSession(session);
     session.addEventListener("end", () => { setState("idle"); });
     const h = new Date().getHours();
@@ -582,6 +605,7 @@ renderer.setAnimationLoop(() => {
   if (state === "listening" || recorder) pulse = 1 + Math.min(0.35, level * 6);
   if (state === "speaking") pulse = 1 + Math.abs(Math.sin(t * 9)) * 0.12;
   if (state === "thinking") pulse = 1 + Math.sin(t * 6) * 0.06;
+  if (state === "idle" && ok.mic) pulse += Math.min(0.15, peak * 3); // el orbe "oye": late con tu voz
   core.scale.setScalar(pulse); shell.scale.setScalar(1 + (pulse - 1) * 0.5);
   halo.material.opacity = 0.35 + (pulse - 1) * 1.2;
 
