@@ -45,18 +45,19 @@ TOOLS = "Read,Write,Edit,Glob,Grep,WebSearch,WebFetch"
 PROMPT = """Trabajas junto a JARVIS, el asistente de estudio en realidad mixta de un estudiante.
 El estudiante te encargó esto: «{texto}»
 
-Prepara en ESTA carpeta material para que el estudiante haga la tarea por su cuenta y la entienda:
-- GUIA.md: explicación clara del tema, paso a paso, con ejemplos concretos.
-- PRACTICA.md: ejercicios PARECIDOS a los de la tarea, resueltos y explicados. Si el encargo trae
-  los ejercicios exactos de la tarea, para esos da el método y pistas, no la respuesta final.
-- PLAN.md: plan corto para hacer la tarea (pasos y tiempo estimado).
-- Si es un trabajo escrito o investigación: FUENTES.md con fuentes confiables y un esquema sugerido.
-  No redactes el trabajo final.
-Escribe todo en español, claro y para estudiante. Si falta información (materia, nivel, tema exacto),
-haz suposiciones razonables y anótalas al inicio de GUIA.md.
+Haz la tarea completa en ESTA carpeta, como borrador listo para que el estudiante lo revise:
+- Ensayo, reporte o trabajo escrito: redáctalo COMPLETO en TRABAJO.md (título, introducción,
+  desarrollo con subtítulos, conclusión y referencias). Busca en internet y usa solo fuentes reales
+  que hayas verificado; cítalas en formato APA. Extensión: la que pida el encargo, o unas
+  1000-1500 palabras si no lo dice. Nivel y tono de estudiante universitario, natural, no robótico.
+- Ejercicios o problemas: resuélvelos todos en SOLUCIONES.md con el procedimiento completo.
+- Siempre: NOTAS.md con los 5-8 puntos clave del trabajo, explicados en sencillo, para que el
+  estudiante pueda explicarlo y defenderlo si se lo preguntan.
+Escribe todo en español. Si falta información (materia, nivel, extensión), haz suposiciones
+razonables y anótalas al inicio de NOTAS.md.
 
 Cuando termines, tu respuesta final debe ser SOLO un resumen de 2 a 4 frases, en español, para
-leerse en voz alta: qué preparaste y por dónde empezar. Sin markdown."""
+leerse en voz alta: qué hiciste y en qué archivo quedó. Sin markdown."""
 
 
 def log(msg):

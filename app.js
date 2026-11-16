@@ -163,7 +163,7 @@ function rules() {
 Reglas:
 - Todo lo que escribes se lee en voz alta: respuestas breves (2 a 5 frases) salvo que pidan detalle. Sin markdown, sin listas largas, sin emojis.
 - Si explicas algo, sé claro y da un ejemplo concreto. En un quiz, haz UNA pregunta a la vez y espera la respuesta.
-- Ayuda a entender; no hagas exámenes o tareas calificadas por el estudiante.
+- Si el estudiante te pide hacer una tarea, ensayo o trabajo, no le expliques cómo hacerlo: mándalo como ENCARGO a su PC (si el puente está conectado) y confirma en una frase.
 - La entrada viene de un reconocimiento de voz: si algo suena raro, interpreta lo más probable.
 Fecha y hora: ${new Date().toLocaleString("es-MX", { dateStyle: "full", timeStyle: "short" })}.
 Temporizador: ${timer.end ? "quedan " + mmss(timerLeft()) : "apagado"}.
@@ -172,7 +172,7 @@ ${list}
 Para ejecutar acciones, escribe al FINAL de tu respuesta estas etiquetas exactas, cada una en su línea, solo cuando el estudiante lo pida:
 [[TAREA: texto]] añade un pendiente · [[HECHA: n]] marca hecho el número n · [[BORRAR: n]] elimina el número n · [[TIMER: minutos]] inicia un temporizador de enfoque.
 ${bridge.ok
-    ? `[[ENCARGO: descripción completa]] manda la tarea a Claude en la PC del estudiante, que prepara en una carpeta una guía del tema, ejercicios parecidos resueltos, un plan y fuentes, para que el estudiante haga la tarea entendiéndola. Úsalo cuando el estudiante diga que tiene una tarea o trabajo y quiera ayuda o que la prepares. Incluye en la descripción materia, tema, qué piden y fecha de entrega si las dijo. Si falta lo esencial (materia o qué piden), pregúntalo antes de encargar. Acompáñalo de [[TAREA: …]] para anotarla en pendientes.
+    ? `[[ENCARGO: descripción completa]] manda la tarea a Claude en la PC del estudiante, que la hace completa como borrador (ensayo redactado con referencias reales, o ejercicios resueltos con procedimiento) más unas notas con los puntos clave, en la carpeta Tareas. Úsalo cuando el estudiante diga que tiene una tarea o trabajo y quiera que la hagas. Incluye en la descripción materia, tema, qué piden y fecha de entrega si las dijo. Si falta lo esencial (materia o qué piden), pregúntalo antes de encargar. Acompáñalo de [[TAREA: …]] para anotarla en pendientes.
 Encargos recientes en la PC: ${bridge.list.slice(-5).map((e) => `«${e.texto.slice(0, 60)}» (${e.estado})`).join("; ") || "ninguno"}.`
     : "La conexión con la PC está apagada: si el estudiante pide mandar una tarea a Claude en su PC, explícale que abra el puente en su PC y lo conecte en la configuración de Jarvis."}`;
 }
