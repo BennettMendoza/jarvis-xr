@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
@@ -75,13 +75,13 @@
 <div class="ui">
   <section class="card" id="setup">
     <h1>JARVIS</h1>
-    <p class="dim">Asistente de estudio en realidad mixta · cerebro: Groq (gratis) · <span id="ver">versión 6</span></p>
-    <p class="dim">Modelo actual: <b id="cur-model">—</b></p>
+    <p class="dim">Asistente de estudio en realidad mixta Â· cerebro: Groq (gratis) Â· <span id="ver">versiÃ³n 6</span></p>
+    <p class="dim">Modelo actual: <b id="cur-model">â€”</b></p>
 
-    <h2>1 · Clave de Groq</h2>
-    <p class="dim">Crea una clave gratis en <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a> y pégala aquí. Se guarda solo en este visor.</p>
+    <h2>1 Â· Clave de Groq</h2>
+    <p class="dim">Crea una clave gratis en <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a> y pÃ©gala aquÃ­. Se guarda solo en este visor.</p>
     <label for="key">API key</label>
-    <input type="password" id="key" placeholder="gsk_…" autocomplete="off">
+    <input type="password" id="key" placeholder="gsk_â€¦" autocomplete="off">
     <details>
       <summary class="dim" style="cursor:pointer;margin-top:10px">Opciones avanzadas</summary>
       <label for="model">Modelo de chat</label>
@@ -93,49 +93,49 @@
       <button class="btn" id="save">Guardar y probar</button>
     </div>
 
-    <h2>2 · Micrófono</h2>
-    <div class="row"><button class="btn" id="mic-on">Activar micrófono</button><button class="btn" id="test-voice">Probar voz</button></div>
-    <label for="mic-meter">Nivel del micrófono (habla y debe moverse)</label>
+    <h2>2 Â· MicrÃ³fono</h2>
+    <div class="row"><button class="btn" id="mic-on">Activar micrÃ³fono</button><button class="btn" id="test-voice">Probar voz</button></div>
+    <label for="mic-meter">Nivel del micrÃ³fono (habla y debe moverse)</label>
     <div class="meter" id="mic-meter"><i id="mic-level"></i></div>
-    <p class="dim" id="mic-diag">Micrófono sin activar.</p>
+    <p class="dim" id="mic-diag">MicrÃ³fono sin activar.</p>
     <div class="row"><button class="btn" id="mic-test">Grabar prueba (3 s)</button></div>
 
     <h2>Estado</h2>
     <ul class="steps">
       <li><span class="dot" id="d-key"></span>Cerebro (Groq)</li>
-      <li><span class="dot" id="d-mic"></span>Micrófono</li>
+      <li><span class="dot" id="d-mic"></span>MicrÃ³fono</li>
       <li><span class="dot" id="d-tts"></span>Voz de Jarvis<span class="dim" id="tts-note"></span></li>
       <li><span class="dot" id="d-xr"></span>Realidad mixta</li>
     </ul>
 
-    <label class="toggle"><input type="checkbox" id="handsfree"> Manos libres: escucha siempre y responde cuando dices «Jarvis»</label>
+    <label class="toggle"><input type="checkbox" id="handsfree"> Manos libres: escucha siempre y responde cuando dices Â«JarvisÂ»</label>
 
     <div class="row" style="margin-top:18px">
       <button class="btn primary big" id="enter" disabled>ENTRAR A REALIDAD MIXTA</button>
     </div>
-    <p class="dim" id="enter-hint">Primero guarda tu clave y activa el micrófono.</p>
+    <p class="dim" id="enter-hint">Primero guarda tu clave y activa el micrÃ³fono.</p>
   </section>
 
   <div class="center">
-    <div class="state" id="state">En línea</div>
+    <div class="state" id="state">En lÃ­nea</div>
     <div class="row">
-      <button class="btn primary" id="ptt" disabled>Mantén para hablar</button>
+      <button class="btn primary" id="ptt" disabled>MantÃ©n para hablar</button>
     </div>
   </div>
 
   <section class="card">
-    <h2 style="margin-top:0">Cómo se usa dentro de los lentes</h2>
-    <p class="dim">• <b>Hablar:</b> mantén el gatillo (o junta índice y pulgar) mientras hablas; suelta para enviar.<br>
-    • <b>Manos libres:</b> di «Jarvis, …» y tu pregunta.<br>
-    • <b>Mover el orbe:</b> pellizca o aprieta el gatillo <i>tocando el orbe</i> y arrástralo a donde quieras. Se recuerda su lugar.<br>
-    • <b>Pídele:</b> «añade estudiar física», «marca la 1 como hecha», «enfócame 25 minutos», «hazme un quiz de historia».</p>
-    <h2>Conversación</h2>
+    <h2 style="margin-top:0">CÃ³mo se usa dentro de los lentes</h2>
+    <p class="dim">â€¢ <b>Hablar:</b> mantÃ©n el gatillo (o junta Ã­ndice y pulgar) mientras hablas; suelta para enviar.<br>
+    â€¢ <b>Manos libres:</b> di Â«Jarvis, â€¦Â» y tu pregunta.<br>
+    â€¢ <b>Mover el orbe:</b> pellizca o aprieta el gatillo <i>tocando el orbe</i> y arrÃ¡stralo a donde quieras. Se recuerda su lugar.<br>
+    â€¢ <b>PÃ­dele:</b> Â«aÃ±ade estudiar fÃ­sicaÂ», Â«marca la 1 como hechaÂ», Â«enfÃ³came 25 minutosÂ», Â«hazme un quiz de historiaÂ».</p>
+    <h2>ConversaciÃ³n</h2>
     <div class="log" id="log"></div>
     <h2>Pendientes</h2>
     <ul class="tasks" id="tasks"></ul>
   </section>
 </div>
 
-<script type="module" src="./app.js?v=6"></script>
+<script type="module" src="./app.js?v=7"></script>
 </body>
 </html>

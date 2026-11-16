@@ -354,7 +354,12 @@ $("#mic-test").addEventListener("click", async () => {
     addLog("j", `Grabé ${(blob.size / 1024).toFixed(1)} KB. Te lo reproduzco…`);
     await playBlob(blob);
     if (ok.key) {
-      try { const t = await transcribe(blob); addLog("j", t ? `Entendí: «${t}»` : "No entendí palabras en la grabación."); }
+      try {
+        const t = (await transcribe(blob)).trim();
+        // Whisper "oye" frases como «Gracias» cuando el audio está en silencio.
+        if (!t || JUNK.test(t)) addLog("e", "La grabación llegó en silencio: tu micrófono parece silenciado en el Quest. Revisa el micrófono en Configuración rápida del Quest.");
+        else addLog("j", `Entendí: «${t}»`);
+      }
       catch (e) { addLog("e", "No pude transcribir: " + e.message); }
     }
   };
@@ -387,7 +392,7 @@ function startRec(mode) {
 function stopRec() { if (recorder && recorder.state !== "inactive") recorder.stop(); }
 
 const WAKE = /\b(j|y|ch|g|h)[aá]r?vi[sz]\b/i;
-const JUNK = /^(gracias( por ver)?[.!]*|subt[ií]tulos.*|¡?suscr[ií]bete.*|\.+|)$/i;
+const JUNK = /^[¡!¿\s]*(gracias( por ver( el video)?)?|muchas gracias|subt[ií]tulos.*|suscr[ií]bete.*|\.+|)[.!\s]*$/i;
 async function onRecStop() {
   const dur = performance.now() - recStart, mode = recMode;
   const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
