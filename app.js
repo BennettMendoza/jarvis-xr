@@ -70,6 +70,37 @@ async function chat(messages) {
   const j = await r.json();
   return j.choices?.[0]?.message?.content?.trim() || "";
 }
+// Igual que chat(), pero va entregando el texto mientras Groq lo escribe (para hablar antes).
+async function chatStream(messages, onDelta, signal) {
+  const r = await fetch(API + "/chat/completions", {
+    method: "POST", signal,
+    headers: { Authorization: "Bearer " + cfg.key, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: cfg.model, messages, temperature: 0.6, max_completion_tokens: 1500, stream: true,
+      ...(cfg.model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}),
+    }),
+  });
+  if (!r.ok) throw new Error(await groqError(r));
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let buf = "", full = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split("\n"); buf = lines.pop();
+    for (const line of lines) {
+      const d = line.trim();
+      if (!d.startsWith("data:")) continue;
+      const data = d.slice(5).trim();
+      if (data === "[DONE]") return full;
+      try {
+        const piece = JSON.parse(data).choices?.[0]?.delta?.content;
+        if (piece) { full += piece; onDelta(full); }
+      } catch { /* línea incompleta */ }
+    }
+  }
+  return full;
+}
 async function transcribe(blob) {
   const fd = new FormData();
   const ext = blob.type.includes("mp4") ? "mp4" : blob.type.includes("ogg") ? "ogg" : "webm";
@@ -199,27 +230,55 @@ function runActions(text) {
   del.sort((a, b) => b - a).forEach((i) => { if (tasks[i]) { tasks.splice(i, 1); changed = true; } });
   if (changed) { store.set("tasks", tasks); renderTasks(); }
 }
-const clean = (t) => t.replace(ACT, "").replace(/[*#_`]/g, "").trim();
+const clean = (t) => t.replace(ACT, "").replace(/\[\[[^\]]*\]\]/g, "").replace(/[*#_`]/g, "").trim();
 
-let busy = false;
+let busy = false, askAbort = null;
+// Texto ya decible: quita etiquetas [[...]] completas y corta antes de una que aún no se cierra.
+function speakable(full) {
+  let v = full;
+  const open = v.lastIndexOf("[[");
+  if (open !== -1 && v.indexOf("]]", open) === -1) v = v.slice(0, open);
+  return v.replace(ACT, "").replace(/\[\[[^\]]*\]\]/g, ""); // cualquier etiqueta, aunque sea inventada
+}
 async function ask(text) {
-  if (busy || !text) return;
+  if (!text) return;
+  if (busy) { // lo interrumpieron: corta la respuesta anterior y atiende la nueva
+    askAbort?.abort(); hush();
+    for (let i = 0; i < 20 && busy; i++) await new Promise((r) => setTimeout(r, 50));
+  }
   busy = true;
   lastHeard = text; addLog("u", text);
   turns.push({ role: "user", content: text });
   setState("thinking");
+  const t = speechStart();
+  let spoken = 0;
+  askAbort = new AbortController();
   try {
-    const reply = await chat([{ role: "system", content: rules() }, ...turns.slice(-12)]);
+    const reply = await chatStream([{ role: "system", content: rules() }, ...turns.slice(-12)], (full) => {
+      const vis = speakable(full);
+      lastText = clean(vis) || "…"; panelDirty = true;
+      // en cuanto hay una frase completa, Jarvis empieza a decirla mientras escribe el resto
+      const m = vis.slice(spoken).match(/^[\s\S]{12,}?[.!?…:](?=\s)/);
+      if (m) { speechPush(t, clean(m[0])); spoken += m[0].length; }
+    }, askAbort.signal);
+    const rest = clean(speakable(reply).slice(spoken));
+    if (rest) speechPush(t, rest);
+    speechEnd(t);
     turns.push({ role: "assistant", content: reply });
     runActions(reply);
     const shown = clean(reply) || "Hecho.";
+    lastText = shown; panelDirty = true;
     addLog("j", shown);
-    await say(shown);
+    busy = false; // ya puede escucharte aunque siga hablando
+    await speechDone(t);
     followUntil = Date.now() + 8000;
   } catch (e) {
-    turns.pop();
-    addLog("e", e.message);
-    lastText = e.message; setState("idle");
+    speechEnd(t);
+    if (e.name !== "AbortError") {
+      turns.pop();
+      addLog("e", e.message);
+      lastText = e.message; setState("idle");
+    }
   }
   busy = false;
 }
@@ -507,16 +566,46 @@ function playBlob(blob, styled = false) {
     a.play().catch(done);
   });
 }
-async function sayPiper(text, token) {
-  const parts = sentences(text);
-  let next = piper.predict({ text: parts[0], voiceId: PIPER_VOICE });
-  for (let i = 0; i < parts.length; i++) {
-    const wav = await next;
-    if (token !== speakToken) return;
-    if (i + 1 < parts.length) next = piper.predict({ text: parts[i + 1], voiceId: PIPER_VOICE });
-    await playBlob(wav, true);
-    if (token !== speakToken) return;
+// Cola de voz: las frases entran conforme llegan (aunque la respuesta siga escribiéndose) y se
+// preparan con una de ventaja, para que entre frase y frase casi no haya silencio.
+const speech = { token: 0, q: [], closed: true, run: null };
+function speechStart() {
+  hush();
+  speech.token++; speech.q = []; speech.closed = false; speech.run = null;
+  return speech.token;
+}
+function prefetch() {
+  if (engine !== "piper") return;
+  for (const it of speech.q.slice(0, 2)) {
+    if (it.wav) continue;
+    it.wav = piper.predict({ text: it.text, voiceId: PIPER_VOICE });
+    it.wav.catch(() => {}); // si se cancela antes de usarse, que no ensucie la consola
   }
+}
+function speechPush(t, text) {
+  if (t !== speech.token || !text || !text.trim()) return;
+  if (!ok.tts || !engine) return;
+  for (const s of sentences(text)) speech.q.push({ text: s, wav: null });
+  prefetch();
+  if (!speech.run) speech.run = runSpeech(t);
+}
+function speechEnd(t) { if (t === speech.token) speech.closed = true; }
+async function speechDone(t) { while (t === speech.token && (speech.run || !speech.closed)) await (speech.run || new Promise((r) => setTimeout(r, 60))); }
+async function runSpeech(t) {
+  setState("speaking");
+  try {
+    while (t === speech.token) {
+      if (!speech.q.length) { if (speech.closed) break; await new Promise((r) => setTimeout(r, 40)); continue; }
+      const it = speech.q.shift();
+      prefetch();
+      if (engine === "piper") {
+        const wav = await (it.wav || piper.predict({ text: it.text, voiceId: PIPER_VOICE }));
+        if (t !== speech.token) break;
+        await playBlob(wav, true);
+      } else await sayNative(it.text);
+    }
+  } catch (e) { addLog("e", "La voz falló: " + (e.message || e)); }
+  if (t === speech.token) { speech.run = null; if (state === "speaking") setState("idle"); }
 }
 function sayNative(text) {
   return new Promise((resolve) => {
@@ -531,15 +620,14 @@ function sayNative(text) {
 }
 async function say(text) {
   lastText = text; panelDirty = true;
-  const token = ++speakToken;
+  const t = speechStart();
   if (!ok.tts || !engine) { setState("idle"); return; }
-  setState("speaking");
-  try { engine === "piper" ? await sayPiper(text, token) : await sayNative(text); }
-  catch (e) { addLog("e", "La voz falló: " + (e.message || e)); }
-  if (token === speakToken && state === "speaking") setState("idle");
+  speechPush(t, text);
+  speechEnd(t);
+  await speechDone(t);
 }
 function hush() {
-  speakToken++;
+  speech.token++; speech.q = []; speech.run = null; speech.closed = true;
   if (window.speechSynthesis) speechSynthesis.cancel();
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   if (state === "speaking") setState("idle");
@@ -551,7 +639,7 @@ $("#test-voice").addEventListener("click", async () => {
 
 // ---------------- Micrófono, manos libres y push-to-talk ----------------
 let stream = null, analyser = null, ac = null, level = 0, recorder = null, chunks = [], recStart = 0, recMode = null;
-let voiceSince = 0, silenceSince = 0, noise = 0.01, peak = 0;
+let voiceSince = 0, silenceSince = 0, noise = 0.01, peak = 0, echo = 0.01, bargeSince = 0;
 // Umbrales que se adaptan al ruido de fondo: el micrófono del Quest es más bajo que el de una PC.
 const vadOn = () => Math.max(0.012, noise * 3.5);
 const vadOff = () => Math.max(0.008, noise * 2);
@@ -683,13 +771,29 @@ function vadTick() {
   const meter = $("#mic-level");
   if (meter) meter.style.width = Math.min(100, (peak / 0.08) * 100) + "%";
   if (!recorder && state !== "speaking") noise = noise * 0.995 + Math.min(level, 0.05) * 0.005;
-  if (!cfg.handsFree || !inputReady() || busy || state === "speaking" || state === "thinking" || recMode === "ptt") { voiceSince = 0; return; }
   const now = performance.now();
+  // Interrumpir: si hablas mientras Jarvis habla, se calla y te escucha. Para no confundirse con
+  // su propia voz (que el micrófono también capta un poco), el umbral se ajusta a ese «eco».
+  if (state === "speaking" && cfg.handsFree && inputReady() && !recorder) {
+    echo = echo * 0.98 + Math.min(level, 0.2) * 0.02;
+    const th = Math.max(0.05, echo * 2.5, vadOn() * 2);
+    if (level > th) {
+      if (!bargeSince) bargeSince = now;
+      if (now - bargeSince > 250) {
+        bargeSince = 0; hush(); askAbort?.abort();
+        followUntil = Date.now() + 10000; // es respuesta directa: no hace falta decir «Jarvis»
+        startRec("vad"); silenceSince = 0;
+      }
+    } else bargeSince = 0;
+    return;
+  }
+  if (state !== "speaking") echo = Math.max(noise, echo * 0.9);
+  if (!cfg.handsFree || !inputReady() || busy || state === "speaking" || state === "thinking" || recMode === "ptt") { voiceSince = 0; return; }
   if (!recorder) {
     if (level > vadOn()) { if (!voiceSince) voiceSince = now; if (now - voiceSince > 120) { startRec("vad"); silenceSince = 0; } }
     else voiceSince = 0;
   } else {
-    if (level < vadOff()) { if (!silenceSince) silenceSince = now; if (now - silenceSince > 1000) stopRec(); }
+    if (level < vadOff()) { if (!silenceSince) silenceSince = now; if (now - silenceSince > 750) stopRec(); }
     else silenceSince = 0;
     if (now - recStart > 15000) stopRec();
   }
