@@ -156,7 +156,7 @@ setInterval(() => {
 let lastMinute = -1;
 
 // ---------------- Cerebro ----------------
-const ACT = /\[\[\s*(TAREA|HECHA|BORRAR|TIMER|ENCARGO|TEAMS|HACER_TEAMS|CONECTAR_TEAMS)\s*:?\s*([^\]]*)\]\]/gi;
+const ACT = /\[\[\s*(TAREA|HECHA|BORRAR|TIMER|ENCARGO|TEAMS|HACER_TEAMS|CONECTAR_TEAMS|ABRIR_WEB|ABRIR_APP|ABRIR_ARCHIVO)\s*:?\s*([^\]]*)\]\]/gi;
 function rules() {
   const list = tasks.length ? tasks.map((t, i) => `${i + 1}. [${t.done ? "x" : " "}] ${t.text}`).join("\n") : "(ninguno)";
   return `Eres JARVIS, la inteligencia artificial personal de un estudiante, y vives como un orbe holográfico en sus lentes de realidad mixta. Tu estilo: mayordomo digital británico en español. Formal pero cálido, seguro, eficiente, con humor seco y sutil; nunca empalagoso ni exagerado. Frases como «A su servicio», «Enseguida», «Me permito sugerir…» encajan, sin abusar. No asumas el género del usuario.${cfg.name ? ` Dirígete al usuario como «${cfg.name}».` : ""}
@@ -174,6 +174,7 @@ Para ejecutar acciones, escribe al FINAL de tu respuesta estas etiquetas exactas
 ${bridge.ok
     ? `[[ENCARGO: descripción completa]] manda la tarea a Claude en la PC del estudiante, que la hace completa como borrador (ensayo redactado con referencias reales, o ejercicios resueltos con procedimiento) más unas notas con los puntos clave, en la carpeta Tareas. Úsalo cuando el estudiante diga que tiene una tarea o trabajo y quiera que la hagas. Incluye en la descripción materia, tema, qué piden y fecha de entrega si las dijo. Si falta lo esencial (materia o qué piden), pregúntalo antes de encargar. Acompáñalo de [[TAREA: …]] para anotarla en pendientes.
 Encargos recientes en la PC: ${bridge.list.slice(-5).map((e) => `«${e.texto.slice(0, 60)}» (${e.estado})`).join("; ") || "ninguno"}.
+En la PC del estudiante puedes abrir cosas: [[ABRIR_WEB: url completa https]] abre una página en el navegador de la PC (YouTube: https://www.youtube.com, o https://www.youtube.com/results?search_query=... para buscar un video) · [[ABRIR_APP: nombre]] abre Word, Excel, PowerPoint, Bloc de notas, Calculadora, Explorador, Chrome, Spotify, Teams, Outlook, Paint o WhatsApp · [[ABRIR_ARCHIVO: palabras del nombre]] abre un documento de sus carpetas (incluye «word», «pdf», «excel» o «powerpoint» si dice el tipo; incluye «aleatorio» si pide uno cualquiera). Cuando pida abrir algo, hazlo con la etiqueta y confirma en pocas palabras; no digas que no puedes.
 Microsoft Teams (${teamsInfo.estado}): [[TEAMS]] revisa las tareas pendientes de Teams (úsalo cuando pida checar sus tareas o pendientes de Teams) · [[HACER_TEAMS: n]] manda la tarea n de la lista de Teams a Claude para que la haga (una etiqueta por tarea; si dice «hazlas todas», pon una por cada tarea) · [[CONECTAR_TEAMS]] inicia la conexión con Teams si no está conectado.
 Tareas de Teams conocidas: ${teamsInfo.list.length ? teamsInfo.list.map((t, i) => `${i + 1}. ${t.clase ? t.clase + " — " : ""}${t.titulo} (entrega ${t.entrega ? t.entrega.slice(0, 10) : "sin fecha"})`).join("; ") : "aún no revisadas"}.`
     : "La conexión con la PC está apagada: si el estudiante pide mandar una tarea a Claude en su PC, explícale que abra el puente en su PC y lo conecte en la configuración de Jarvis."}`;
@@ -190,6 +191,9 @@ function runActions(text) {
     if (K === "TEAMS") teamsCheck();
     if (K === "CONECTAR_TEAMS") teamsConnect();
     if (K === "HACER_TEAMS") teamsDo(parseInt(v, 10));
+    if (K === "ABRIR_WEB" && v) pcOpen("web", v);
+    if (K === "ABRIR_APP" && v) pcOpen("app", v);
+    if (K === "ABRIR_ARCHIVO" && v) pcOpen("archivo", v);
   }
   done.forEach((i) => { if (tasks[i]) { tasks[i].done = true; changed = true; } });
   del.sort((a, b) => b - a).forEach((i) => { if (tasks[i]) { tasks.splice(i, 1); changed = true; } });
@@ -336,6 +340,16 @@ async function teamsConnect() {
       } catch { /* reintenta en el siguiente ciclo */ }
     }, 5000);
   } catch (e) { dot("teams", false); addLog("e", "Teams: " + e.message); }
+}
+async function pcOpen(tipo, valor) {
+  if (!bridge.ok) { addLog("e", "Para abrir cosas en su PC necesito el puente conectado."); pendingNews.push({ estado: "voz", texto: "Para eso necesito el puente con su PC encendido." }); return; }
+  try {
+    const r = await bridgeFetch("/api/pc/abrir", { method: "POST", body: JSON.stringify({ tipo, valor }) });
+    addLog("j", r.mensaje);
+  } catch (e) {
+    addLog("e", e.message);
+    pendingNews.push({ estado: "voz", texto: e.message });
+  }
 }
 async function teamsDo(n) {
   const t = teamsInfo.list[n - 1];

@@ -177,6 +177,97 @@ def worker():
             actualizar(eid, estado="error", resumen="No encontré Claude Code en la PC.")
 
 
+# ---------------- Abrir cosas en la PC ----------------
+# Solo abre: páginas web (http/https), apps de una lista fija y documentos/medios de tus carpetas.
+# Nunca ejecuta programas sueltos (.exe, .bat, etc.) ni comandos que vengan de afuera.
+import random
+import unicodedata
+import urllib.parse
+import webbrowser
+
+APPS = {
+    "word": "winword", "excel": "excel", "powerpoint": "powerpnt", "power point": "powerpnt",
+    "bloc de notas": "notepad", "notepad": "notepad", "calculadora": "calc", "explorador": "explorer",
+    "archivos": "explorer", "chrome": "chrome", "edge": "msedge", "spotify": "spotify:", "teams": "msteams:",
+    "outlook": "outlook", "paint": "mspaint", "configuracion": "ms-settings:", "whatsapp": "whatsapp:",
+}
+DOC_EXT = {".docx", ".doc", ".pdf", ".pptx", ".ppt", ".xlsx", ".xls", ".txt", ".md", ".odt", ".rtf",
+           ".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mp3", ".wav", ".m4a", ".csv"}
+TIPO_EXT = {"word": {".docx", ".doc"}, "excel": {".xlsx", ".xls", ".csv"}, "powerpoint": {".pptx", ".ppt"},
+            "pdf": {".pdf"}, "imagen": {".jpg", ".jpeg", ".png", ".gif"}, "video": {".mp4"}, "audio": {".mp3", ".wav", ".m4a"}}
+
+
+def _norm(s):
+    s = unicodedata.normalize("NFD", s.lower())
+    return "".join(c for c in s if unicodedata.category(c) != "Mn")
+
+
+def _carpetas():
+    out = [HOME / "Documents", HOME / "Desktop", HOME / "Downloads", HOME / "Escritorio", HOME / "Documentos"]
+    for od in HOME.glob("OneDrive*"):
+        out.append(od)
+    return [c for c in out if c.is_dir()]
+
+
+def buscar_archivos(consulta, exts, limite=10):
+    palabras = [w for w in _norm(consulta).split() if len(w) > 1]
+    hallados, vistos = [], 0
+    for base in _carpetas():
+        for raiz, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("node_modules", "navegador", "navegador-chrome", "AppData")]
+            for f in files:
+                vistos += 1
+                if vistos > 40000:
+                    break
+                ext = os.path.splitext(f)[1].lower()
+                if ext not in exts or f.startswith("~$"):
+                    continue
+                n = _norm(f)
+                if all(w in n for w in palabras):
+                    p = Path(raiz) / f
+                    try:
+                        hallados.append((p.stat().st_mtime, p))
+                    except OSError:
+                        pass
+    hallados.sort(reverse=True)
+    return [p for _, p in hallados[:limite]]
+
+
+def pc_abrir(tipo, valor, probar=False):
+    valor = (valor or "").strip()
+    if tipo == "web":
+        url = valor if re.match(r"^https?://", valor) else "https://www.google.com/search?q=" + urllib.parse.quote(valor)
+        if not re.match(r"^https?://[^\s]+$", url):
+            raise ValueError("Esa dirección no parece válida.")
+        if not probar:
+            webbrowser.open(url)
+        return f"Abrí {url[:80]} en tu PC."
+    if tipo == "app":
+        clave = _norm(valor)
+        destino = next((v for k, v in APPS.items() if k in clave), None)
+        if not destino:
+            raise ValueError("No tengo esa app en mi lista. Puedo abrir: " + ", ".join(sorted(set(APPS))) + ".")
+        if not probar:
+            subprocess.Popen(["cmd", "/c", "start", "", destino], shell=False)
+        return f"Abrí {valor} en tu PC."
+    if tipo == "archivo":
+        q = _norm(valor)
+        exts = next((e for k, e in TIPO_EXT.items() if k in q), DOC_EXT)
+        for k in TIPO_EXT:
+            q = q.replace(k, " ")
+        aleatorio = any(w in q for w in ("aleatorio", "random", "cualquier", "cualquiera"))
+        for w in ("aleatorio", "random", "cualquiera", "cualquier", "archivo", "documento", "un ", "el ", "la ", "de "):
+            q = q.replace(w, " ")
+        candidatos = buscar_archivos(q, exts, limite=200 if aleatorio else 10)
+        if not candidatos:
+            raise ValueError("No encontré ningún archivo así en Documentos, Escritorio, Descargas ni OneDrive.")
+        elegido = random.choice(candidatos) if aleatorio else candidatos[0]
+        if not probar:
+            os.startfile(str(elegido))
+        return f"Abrí {elegido.name} en tu PC."
+    raise ValueError("No sé qué abrir.")
+
+
 # ---------------- Microsoft Teams (navegador automático) ----------------
 # Tu escuela no permite que apps externas usen la API de Microsoft, así que el puente abre
 # Google Chrome con un perfil propio (Documentos/Jarvis/navegador-chrome), donde inicias sesión UNA
@@ -427,7 +518,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(404, {"error": "No existe."})
 
     def do_POST(self):
-        if self.path not in ("/api/encargos", "/api/teams/login", "/api/teams/encargar"):
+        if self.path not in ("/api/encargos", "/api/teams/login", "/api/teams/encargar", "/api/pc/abrir"):
             return self.reply(404, {"error": "No existe."})
         if not self.authed():
             return
@@ -438,6 +529,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, {"error": "Petición inválida."})
         if self.path == "/api/teams/login":
             return self.reply(200, teams_login())
+        if self.path == "/api/pc/abrir":
+            try:
+                msg = pc_abrir(str(body.get("tipo", "")), str(body.get("valor", ""))[:300], bool(body.get("probar")))
+                log(msg)
+                return self.reply(200, {"mensaje": msg})
+            except Exception as ex:
+                return self.reply(400, {"error": str(ex)[:300]})
         if self.path == "/api/teams/encargar":
             t = next((x for x in teams_cache["lista"] if x["id"] == body.get("id")), None)
             if not t:
